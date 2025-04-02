@@ -187,7 +187,7 @@ print("Fibonacci(7):", fib(7)); // Expected: 13
 2.  **Clone the Repository:**
     ```bash
     # Replace with your actual repository URL if different
-    git clone https://github.com/your-username/oxygen.git
+    git clone https://github.com/SkuldNorniern/oxygen.git
     cd oxygen
     ```
 3.  **Build the Interpreter:**
