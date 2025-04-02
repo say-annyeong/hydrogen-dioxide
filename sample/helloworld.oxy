@@ -1,0 +1,5 @@
+// sample/helloworld.oxy
+print("Hello, World from Oxygen!");
+
+let planet = "Earth";
+print("Greetings from", planet);

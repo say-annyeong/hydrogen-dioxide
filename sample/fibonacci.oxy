@@ -1,0 +1,22 @@
+// sample/fibonacci.oxy
+print("Calculating Fibonacci numbers recursively");
+
+// Recursive Fibonacci implementation
+// Function to calculate the nth Fibonacci number
+
+fn fib(n) {
+    if (n <= 0) {
+        return 0;
+    }
+    if (n == 1) {
+        return 1;
+    }
+    return fib(n - 1) + fib(n - 2);
+}
+
+// Print some Fibonacci numbers
+print("Fibonacci(0):", fib(0)); // Expected: 0
+print("Fibonacci(1):", fib(1)); // Expected: 1
+print("Fibonacci(5):", fib(5)); // Expected: 5
+print("Fibonacci(7):", fib(7)); // Expected: 13
+print("Fibonacci(35):", fib(35)); // Expected: 9227465
