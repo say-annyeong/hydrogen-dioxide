@@ -7,7 +7,7 @@ pub mod statement;
 pub mod structdef; // Added structdef module
 
 pub use expression::Expression;
-pub use import::ImportDeclaration;
+pub use import::{ImportDeclaration, ImportSource};
 pub use literal::Literal;
 pub use statement::{BlockStatement, IfAlternative, Statement};
 pub use structdef::{FieldDefinition, MethodDefinition, StructDefinition}; // Added struct exports

@@ -3,7 +3,7 @@
 
 use super::astgen::{
     BinaryOperator, BlockStatement, Expression, FieldDefinition, Identifier, IfAlternative,
-    ImportDeclaration, Literal, MethodDefinition, Program, Statement, StructDefinition,
+    ImportDeclaration, ImportSource, Literal, MethodDefinition, Program, Statement, StructDefinition,
     TypeAnnotation, UnaryOperator, /* other AST nodes */
 };
 use super::token::{Assignment, Keyword, Operator, Punctuation, Special, Token, Position};
@@ -202,6 +202,7 @@ impl<'a> Parser<'a> {
             Some(Token::Keyword(Keyword::Import)) | Some(Token::Keyword(Keyword::From)) => {
                 self.parse_import_statement()
             }
+            Some(Token::Keyword(Keyword::Break)) => self.parse_break_statement(),
             Some(Token::Punctuation(Punctuation::LeftBrace)) => {
                 // Allow standalone block? Let's disallow for now.
                 Err(ParseError::UnexpectedToken(format!("{:?}", self.peek_token().unwrap()), "Expected statement start keyword or expression".to_string(), self.last_pos))
@@ -411,9 +412,9 @@ impl<'a> Parser<'a> {
 
       fn parse_import_statement(&mut self) -> Result<Statement, ParseError> {
           if let Some(Token::Keyword(Keyword::Import)) = self.peek_token() {
+              // Handles: import "path" [as alias];
               self.next_token(); // Consume 'import'
-              // Expect path (string literal)
-               let path = consume_token!(self, Token::String(s) => s, "Expected string literal for module path after 'import'")?;
+              let path = consume_token!(self, Token::String(s) => s, "Expected string literal for module path after 'import'")?;
 
               let mut alias = None;
               if consume_optional_token!(self, Token::Keyword(Keyword::As)) {
@@ -423,9 +424,29 @@ impl<'a> Parser<'a> {
               Ok(Statement::ImportStatement(ImportDeclaration::ImportModule { path, alias }))
 
           } else if let Some(Token::Keyword(Keyword::From)) = self.peek_token() {
+              // Handles: from "path" import ...; OR from std import ...;
               self.next_token(); // Consume 'from'
-               let path = consume_token!(self, Token::String(s) => s, "Expected string literal for module path after 'from'")?;
-              consume_token!(self, Token::Keyword(Keyword::Import), "Expected 'import' after path in 'from' statement")?;
+
+              // Determine the source: path string or 'std' identifier
+              let source = match self.peek_token() {
+                  Some(Token::String(_)) => {
+                      let path = consume_token!(self, Token::String(s) => s, "Expected string literal for module path after 'from'")?;
+                      ImportSource::File(path)
+                  }
+                  Some(Token::Ident(ident)) if ident == "std" => {
+                      self.next_token(); // Consume 'std' identifier
+                      ImportSource::Std
+                  }
+                  _ => {
+                      return Err(ParseError::UnexpectedToken(
+                          format!("{:?}", self.peek_token()),
+                          "Expected module path (string literal) or 'std' after 'from'".to_string(),
+                          self.last_pos
+                      ));
+                  }
+              };
+
+              consume_token!(self, Token::Keyword(Keyword::Import), "Expected 'import' after source in 'from' statement")?;
 
               let mut symbols = Vec::new();
               loop {
@@ -440,13 +461,19 @@ impl<'a> Parser<'a> {
                   }
               }
                consume_optional_token!(self, Token::Punctuation(Punctuation::Semicolon));
-              Ok(Statement::ImportStatement(ImportDeclaration::ImportSymbols { path, symbols }))
+              Ok(Statement::ImportStatement(ImportDeclaration::ImportSymbols { source, symbols }))
           } else {
                // Should not happen if called correctly from parse_statement
                Err(ParseError::Other("Internal error: parse_import_statement called unexpectedly".to_string(), self.last_pos))
           }
       }
 
+    fn parse_break_statement(&mut self) -> Result<Statement, ParseError> {
+        self.next_token(); // Consume 'break'
+        // Optional semicolon
+        consume_optional_token!(self, Token::Punctuation(Punctuation::Semicolon));
+        Ok(Statement::BreakStatement)
+    }
 
     fn parse_expression_statement(&mut self) -> Result<Statement, ParseError> {
         // Check if the next token is a semicolon, which would indicate an empty expression
@@ -1009,56 +1036,57 @@ mod tests {
                        assert_eq!(path, "./math");
                        assert!(alias.is_none());
                    }
-                   _ => panic!("Expected ImportModule"),
+                   _ => panic!("Expected ImportModule declaration"),
                }
         }
         #[test]
         fn test_import_module_with_alias() {
-             let program = parse_ok("import \"./long_name\" as short;");
+             let program = parse_ok("import \"./utils/strings\" as str;");
              assert_eq!(program.statements.len(), 1);
               match &program.statements[0] {
                   Statement::ImportStatement(ImportDeclaration::ImportModule { path, alias }) => {
-                       assert_eq!(path, "./long_name");
-                       assert!(alias.is_some());
-                       assert_eq!(alias.as_ref().unwrap().name, "short");
+                       assert_eq!(path, "./utils/strings");
+                       assert_eq!(alias.as_ref().unwrap().name, "str");
                    }
-                   _ => panic!("Expected ImportModule with alias"),
+                   _ => panic!("Expected ImportModule declaration with alias"),
                }
         }
 
          #[test]
-        fn test_import_symbols() {
-            let program = parse_ok("from \"math\" import add, multiply;");
+        fn test_import_symbols_from_file() {
+            let program = parse_ok("from \"./math\" import add, subtract as sub;");
              assert_eq!(program.statements.len(), 1);
               match &program.statements[0] {
-                  Statement::ImportStatement(ImportDeclaration::ImportSymbols { path, symbols }) => {
-                      assert_eq!(path, "math");
+                  Statement::ImportStatement(ImportDeclaration::ImportSymbols { source, symbols }) => {
+                      match source {
+                          ImportSource::File(path) => assert_eq!(path, "./math"),
+                          _ => panic!("Expected File source"),
+                      }
                       assert_eq!(symbols.len(), 2);
-                       assert_eq!(symbols[0].0.name, "add"); // name
-                      assert!(symbols[0].1.is_none()); // alias
-                      assert_eq!(symbols[1].0.name, "multiply");
-                       assert!(symbols[1].1.is_none());
+                      assert_eq!(symbols[0].0.name, "add");
+                      assert!(symbols[0].1.is_none());
+                      assert_eq!(symbols[1].0.name, "subtract");
+                      assert_eq!(symbols[1].1.as_ref().unwrap().name, "sub");
                   }
-                   _ => panic!("Expected ImportSymbols"),
+                   _ => panic!("Expected ImportSymbols declaration"),
               }
         }
 
          #[test]
-        fn test_import_symbols_with_alias() {
-            let program = parse_ok("from \"math\" import add as sum, sub;");
+        fn test_import_symbols_from_std() {
+            let program = parse_ok("from std import print, len as length;");
              assert_eq!(program.statements.len(), 1);
-             match &program.statements[0] {
-                 Statement::ImportStatement(ImportDeclaration::ImportSymbols { path, symbols }) => {
-                     assert_eq!(path, "math");
-                     assert_eq!(symbols.len(), 2);
-                     assert_eq!(symbols[0].0.name, "add");
-                     assert!(symbols[0].1.is_some());
-                     assert_eq!(symbols[0].1.as_ref().unwrap().name, "sum");
-                     assert_eq!(symbols[1].0.name, "sub");
-                     assert!(symbols[1].1.is_none());
-                 }
-                 _ => panic!("Expected ImportSymbols with alias"),
-             }
+              match &program.statements[0] {
+                  Statement::ImportStatement(ImportDeclaration::ImportSymbols { source, symbols }) => {
+                      assert_eq!(source, &ImportSource::Std);
+                      assert_eq!(symbols.len(), 2);
+                      assert_eq!(symbols[0].0.name, "print");
+                      assert!(symbols[0].1.is_none());
+                      assert_eq!(symbols[1].0.name, "len");
+                      assert_eq!(symbols[1].1.as_ref().unwrap().name, "length");
+                  }
+                  _ => panic!("Expected ImportSymbols from std declaration"),
+              }
         }
 
         #[test]

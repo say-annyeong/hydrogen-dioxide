@@ -1,6 +1,6 @@
 use crate::lexer::astgen::{
     BinaryOperator, BlockStatement, Expression, Identifier, Literal, Program, Statement, UnaryOperator,
-    IfAlternative // Ensure IfAlternative is imported if used
+    IfAlternative, ImportDeclaration, ImportSource // Ensure IfAlternative, ImportDeclaration, and ImportSource are imported if used
 };
 use crate::runtime; // Import the runtime module (for stdlib)
 use crate::interpret::value::{Value, Function};
@@ -9,59 +9,98 @@ use crate::interpret::error::RuntimeError;
 
 use std::rc::Rc;
 use std::cell::RefCell;
+use std::fs; // Import fs for file reading
+use crate::lexer::{Tokenizer, Parser}; // Import Tokenizer and Parser
 
 // --- Interpreter ---
 
 pub struct Interpreter {
+    // The main environment for user code execution
     environment: Rc<RefCell<Environment>>,
+    // A separate environment holding standard library definitions
+    stdlib_environment: Rc<RefCell<Environment>>,
 }
 
 impl Interpreter {
     pub fn new() -> Self {
-        let mut global_env = Environment::new();
+        // 1. Create the dedicated stdlib environment
+        let stdlib_env = Rc::new(RefCell::new(Environment::new()));
 
-        // Register built-in functions
-        global_env.define(
-            "print".to_string(),
-            Value::Function(Box::new(Function {
-                name: "print".to_string(),
-                parameters: vec![], // Parameters are dynamic for built-ins like print
-                body: None,
-                env: Rc::new(RefCell::new(Environment::new())), // Built-ins don't need outer env
-                is_builtin: true,
-            }))
-        );
+        // 2. Populate stdlib_env with Rust built-ins
+        runtime::stdlib::register_stdlib(&mut stdlib_env.borrow_mut());
 
-        // TODO: Register other built-ins (len, type, etc.) here
+        // 3. Load and execute Oxygen stdlib code (.oxy files) into stdlib_env
+        let stdlib_files = vec!["stdlib/core.oxy"]; // Add more files here later
+        for stdlib_path in stdlib_files {
+            match fs::read_to_string(stdlib_path) {
+                Ok(stdlib_code) => {
+                    let tokenizer = Tokenizer::new(&stdlib_code);
+                    let mut parser = Parser::new(tokenizer);
+                    let program = parser.parse_program();
 
-        Interpreter {
-            environment: Rc::new(RefCell::new(global_env)),
-        }
-    }
-
-    pub fn interpret(&mut self, program: Program) -> Result<(), Vec<RuntimeError>> {
-        let mut errors = Vec::new();
-        for statement in program.statements {
-            match self.eval_statement(&statement) {
-                Ok(_) => {} // Continue execution
-                Err(RuntimeError::Return(value)) => {
-                    // Top-level return is allowed but will end execution
-                    println!("Program returned value: {}", value);
-                    return Ok(());
+                    if !parser.errors().is_empty() {
+                        eprintln!("!!! Fatal Error: Failed to parse Oxygen standard library file '{}' !!!", stdlib_path);
+                        parser.errors().iter().for_each(|e| eprintln!("- {:?}", e));
+                        // std::process::exit(1);
+                    } else {
+                        // Create a temporary interpreter instance with stdlib_env to execute stdlib code
+                        let mut temp_interpreter = Interpreter {
+                            environment: Rc::clone(&stdlib_env), // Use stdlib_env for execution
+                            stdlib_environment: Rc::clone(&stdlib_env), // Point to itself (not strictly needed for init)
+                        };
+                        match temp_interpreter.interpret_program_in_place(program) {
+                            Ok(_) => { /* Stdlib file loaded */ }
+                            Err(errors) => {
+                                eprintln!("!!! Fatal Error: Runtime errors during Oxygen standard library initialization '{}' !!!", stdlib_path);
+                                errors.iter().for_each(|e| eprintln!("- {}", e));
+                                // std::process::exit(1);
+                            }
+                        }
+                    }
                 }
                 Err(e) => {
-                    errors.push(e);
-                    // Basic error handling: stop execution on first error
-                    return Err(errors);
+                    eprintln!("!!! Fatal Error: Could not read Oxygen standard library file '{}': {} !!!", stdlib_path, e);
+                    // std::process::exit(1);
                 }
             }
         }
 
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(errors)
+        // 4. Create the main global environment for user code, enclosing the stdlib environment
+        //    (Or keep them separate and handle lookups? Let's keep separate for now)
+        let global_env = Rc::new(RefCell::new(Environment::new()));
+
+        // 5. Return the final interpreter instance
+        Interpreter {
+            environment: global_env,
+            stdlib_environment: stdlib_env,
         }
+    }
+
+    // Helper function to interpret a Program without creating a new Interpreter instance
+    // Modifies the existing environment.
+    fn interpret_program_in_place(&mut self, program: Program) -> Result<(), Vec<RuntimeError>> {
+        let mut errors = Vec::new();
+        for statement in program.statements {
+            match self.eval_statement(&statement) {
+                Ok(_) => {} // Continue execution
+                Err(RuntimeError::Return(_)) => {
+                    // Top-level return in stdlib is an error
+                     errors.push(RuntimeError::InvalidOperation("Return statement outside function is not allowed in stdlib initialization.".to_string()));
+                     break;
+                }
+                Err(e) => {
+                    errors.push(e);
+                    // Stop on first error during stdlib initialization?
+                    break;
+                }
+            }
+        }
+        if errors.is_empty() { Ok(()) } else { Err(errors) }
+    }
+
+    pub fn interpret(&mut self, program: Program) -> Result<(), Vec<RuntimeError>> {
+        // This function remains the primary entry point for user code
+        self.interpret_program_in_place(program)
     }
 
     // --- Statement Evaluation ---
@@ -114,10 +153,25 @@ impl Interpreter {
                 Ok(())
             },
             Statement::WhileStatement { condition, body } => {
-                // TODO: Implement proper looping
-                eprintln!("Warning: While statement encountered but looping logic not implemented.");
-                self.eval_expression(condition)?; // Evaluate condition once
-               Ok(())
+                // Replace warning with actual implementation
+                loop {
+                    // Evaluate the condition
+                    let condition_value = self.eval_expression(condition)?;
+                    
+                    // Check if we should continue looping
+                    if !self.is_truthy(condition_value) {
+                        break;
+                    }
+                    
+                    // Execute the body of the loop
+                    match self.eval_block_statement(body) {
+                        Ok(_) => (), // Continue to next iteration
+                        Err(RuntimeError::Return(value)) => return Err(RuntimeError::Return(value)), // Propagate return up
+                        Err(RuntimeError::Break) => break, // Break out of the loop
+                        Err(e) => return Err(e), // Propagate other errors
+                    }
+                }
+                Ok(())
             },
             Statement::ForStatement { variable, iterable, body } => {
                  // TODO: Implement proper iteration
@@ -129,11 +183,7 @@ impl Interpreter {
                 eprintln!("Warning: Struct declaration encountered but not interpreted.");
                Ok(())
             },
-            Statement::ImportStatement { .. } => {
-                 // TODO: Implement module loading
-                eprintln!("Warning: Import statement encountered but not interpreted.");
-               Ok(())
-            },
+            Statement::ImportStatement(decl) => self.eval_import_statement(decl),
         }
    }
 
@@ -181,6 +231,39 @@ impl Interpreter {
         }
    }
 
+    // --- New function to handle import statements ---
+    fn eval_import_statement(&mut self, decl: &ImportDeclaration) -> Result<(), RuntimeError> {
+        match decl {
+            ImportDeclaration::ImportSymbols { source, symbols } => {
+                match source {
+                    ImportSource::Std => {
+                        // Import from the dedicated stdlib environment
+                        for (name, alias) in symbols {
+                             let value = self.stdlib_environment.borrow().get(&name.name)
+                                 .ok_or_else(|| RuntimeError::UndefinedVariable(format!("Symbol '{}' not found in standard library.", name.name)))?;
+                             let import_name = alias.as_ref().map_or(&name.name, |a| &a.name);
+                             self.environment.borrow_mut().define(import_name.clone(), value);
+                        }
+                        Ok(())
+                    }
+                    ImportSource::File(path) => {
+                        // TODO: Implement file-based module loading
+                        // This would involve reading, parsing, and executing the file
+                        // in a *new* environment, then selectively importing symbols.
+                         eprintln!("Warning: File-based import ('from \"{}\"') not yet implemented.", path);
+                         Ok(())
+                    }
+                }
+            }
+            ImportDeclaration::ImportModule { path, alias } => {
+                 // TODO: Implement whole module import
+                 // This would load the module and bind it to the alias (or a default name)
+                 eprintln!("Warning: Module import ('import \"{}\"') not yet implemented.", path);
+                Ok(())
+            }
+        }
+    }
+
     // --- Expression Evaluation ---
     fn eval_expression(&mut self, expression: &Expression) -> Result<Value, RuntimeError> {
         match expression {
@@ -227,7 +310,15 @@ impl Interpreter {
     }
 
     fn eval_identifier(&mut self, identifier: &Identifier) -> Result<Value, RuntimeError> {
-        self.environment.borrow().get(&identifier.name)
+        // First, try to find the identifier in the current user environment
+        if let Some(value) = self.environment.borrow().get(&identifier.name) {
+            return Ok(value);
+        }
+        // If not found locally, check the stdlib environment (implicitly imported)
+        // This provides access to things like `print` without explicit import for now.
+        // TODO: Reconsider this implicit fallback - should `print` require `from std import print`?
+        // For now, it allows built-ins defined in Rust (like print) to work without import.
+        self.stdlib_environment.borrow().get(&identifier.name)
             .ok_or_else(|| RuntimeError::UndefinedVariable(identifier.name.clone()))
     }
 
@@ -240,6 +331,11 @@ impl Interpreter {
                 (Value::Int(l), Value::Float(r)) => Ok(Value::Float(l as f64 + r)),
                 (Value::Float(l), Value::Int(r)) => Ok(Value::Float(l + r as f64)),
                 (Value::String(l), Value::String(r)) => Ok(Value::String(l + &r)),
+                (Value::List(l), Value::List(r)) => {
+                    let mut result = l.clone();
+                    result.extend(r.clone());
+                    Ok(Value::List(result))
+                },
                 (l, r) => Err(RuntimeError::TypeError(format!("Cannot add {} and {}", l, r))),
             },
             BinaryOperator::Subtract => match (left, right) {
@@ -301,6 +397,19 @@ impl Interpreter {
         match callee_val {
             Value::Function(func) => {
                 if func.is_builtin {
+                    // Check for string methods
+                    if func.name == "to_upper" || func.name == "to_lower" {
+                        // Retrieve the string value from the environment
+                        if let Some(Value::String(s)) = func.env.borrow().get("__self") {
+                            return if func.name == "to_upper" {
+                                Ok(Value::String(s.to_uppercase()))
+                            } else {
+                                Ok(Value::String(s.to_lowercase()))
+                            };
+                        }
+                    }
+                    
+                    // Otherwise, call the standard builtin function
                     self.call_builtin_function(&func.name, arg_values)
                 } else {
                     self.call_user_function(*func, arg_values)
@@ -325,8 +434,8 @@ impl Interpreter {
     fn call_builtin_function(&mut self, name: &str, args: Vec<Value>) -> Result<Value, RuntimeError> {
          match name {
              "print" => runtime::stdlib::builtin_print(args),
-             // "len" => runtime::stdlib::builtin_len(args), // Example
-             // TODO: Add other built-ins
+             "len" => runtime::stdlib::builtin_len(args),
+             "type" => runtime::stdlib::builtin_type(args),
              _ => Err(RuntimeError::InvalidOperation(format!("Unknown built-in function: {}", name))),
          }
     }
@@ -365,10 +474,11 @@ impl Interpreter {
     }
 
     fn eval_list_initializer(&mut self, items: &[Expression]) -> Result<Value, RuntimeError> {
-        // TODO: Implement actual List value type
-        for item_expr in items { self.eval_expression(item_expr)?; }
-        eprintln!("Warning: List initializer evaluated but list value not created.");
-        Ok(Value::Null) // Placeholder
+        let mut list_items = Vec::with_capacity(items.len());
+        for item_expr in items {
+            list_items.push(self.eval_expression(item_expr)?);
+        }
+        Ok(Value::List(list_items))
     }
 
     fn eval_dict_initializer(&mut self, pairs: &[(Expression, Expression)]) -> Result<Value, RuntimeError> {
@@ -396,18 +506,56 @@ impl Interpreter {
                     None => Err(RuntimeError::InvalidOperation(format!("Index out of bounds: index {} >= string length {}", idx, s.chars().count())))
                 }
             }
-            // TODO: Add List/Array indexing
+            (Value::List(list), Value::Int(idx)) => {
+                if idx < 0 {
+                    return Err(RuntimeError::InvalidOperation(format!("Index out of bounds: index {} is negative", idx)));
+                }
+                let u_idx = idx as usize;
+                if u_idx >= list.len() {
+                    return Err(RuntimeError::InvalidOperation(format!("Index out of bounds: index {} >= list length {}", idx, list.len())));
+                }
+                Ok(list[u_idx].clone())
+            }
             (b, i) => Err(RuntimeError::TypeError(format!("Cannot index type {} with type {}", b, i))),
         }
     }
 
     fn eval_member_access(&mut self, base_expr: &Expression, member: &Identifier) -> Result<Value, RuntimeError> {
         let base_val = self.eval_expression(base_expr)?;
-        match base_val {
-            Value::String(s) if member.name == "length" => {
+        match (&base_val, member.name.as_str()) {
+            (Value::String(s), "length") => {
                 Ok(Value::Int(s.chars().count() as i64))
             }
-            // TODO: Add List/Array .length
+            (Value::List(list), "length") => {
+                Ok(Value::Int(list.len() as i64))
+            }
+            // Add string case conversion methods
+            (Value::String(s), "to_upper") => {
+                // Return a function that will convert to uppercase when called
+                let upper_fn = Function {
+                    name: "to_upper".to_string(),
+                    parameters: vec![],
+                    body: None, // No body for built-in methods
+                    env: Rc::new(RefCell::new(Environment::new())),
+                    is_builtin: true,
+                };
+                // Store the string value in the environment for later access
+                upper_fn.env.borrow_mut().define("__self".to_string(), Value::String(s.clone()));
+                Ok(Value::Function(Box::new(upper_fn)))
+            }
+            (Value::String(s), "to_lower") => {
+                // Return a function that will convert to lowercase when called
+                let lower_fn = Function {
+                    name: "to_lower".to_string(),
+                    parameters: vec![],
+                    body: None, // No body for built-in methods
+                    env: Rc::new(RefCell::new(Environment::new())),
+                    is_builtin: true,
+                };
+                // Store the string value in the environment for later access
+                lower_fn.env.borrow_mut().define("__self".to_string(), Value::String(s.clone()));
+                Ok(Value::Function(Box::new(lower_fn)))
+            }
             // TODO: Add Struct field access
             // Check for methods? (e.g., list.append) - This might require binding methods to values
             _ => Err(RuntimeError::InvalidOperation(format!("Member access for '.{}' not implemented on type {}", member.name, base_val)))
@@ -424,6 +572,7 @@ impl Interpreter {
             Value::Float(f) => f != 0.0 && !f.is_nan(),
             Value::String(s) => !s.is_empty(),
             Value::Function(_) => true,
+            Value::List(list) => !list.is_empty(),
         }
     }
 
@@ -434,6 +583,25 @@ impl Interpreter {
             (Value::Int(l), Value::Float(r)) => Ok((l as f64).partial_cmp(&r)),
             (Value::Float(l), Value::Int(r)) => Ok(l.partial_cmp(&(r as f64))),
             (Value::String(l), Value::String(r)) => Ok(l.partial_cmp(&r)),
+            // Lists can be compared if their elements are comparable
+            (Value::List(l), Value::List(r)) => {
+                // Basic length comparison first for efficiency
+                if l.len() != r.len() {
+                    return Ok(l.len().partial_cmp(&r.len()));
+                }
+                
+                // Compare each element
+                for (left_item, right_item) in l.iter().zip(r.iter()) {
+                    match self.compare_values(left_item.clone(), right_item.clone())? {
+                        Some(std::cmp::Ordering::Equal) => continue, // Elements are equal, continue
+                        Some(order) => return Ok(Some(order)), // Found a non-equal pair
+                        None => return Ok(None), // Incomparable elements found
+                    }
+                }
+                
+                // All elements equal
+                Ok(Some(std::cmp::Ordering::Equal))
+            }
             // Incomparable types
             (l, r) => Err(RuntimeError::TypeError(format!("Cannot compare {} and {}", l, r))),
         }
@@ -449,6 +617,22 @@ impl Interpreter {
             (Value::Float(l), Value::Int(r)) => Ok(l == (r as f64)),
             (Value::String(l), Value::String(r)) => Ok(l == r),
             (Value::Function(l), Value::Function(r)) => Ok(*l == *r),
+            (Value::List(l), Value::List(r)) => {
+                // Check if lists have same length
+                if l.len() != r.len() {
+                    return Ok(false);
+                }
+                
+                // Check each element for equality
+                for (left_item, right_item) in l.iter().zip(r.iter()) {
+                    if !self.values_equal(left_item.clone(), right_item.clone())? {
+                        return Ok(false);
+                    }
+                }
+                
+                // All elements are equal
+                Ok(true)
+            }
             // Different types are not equal
             _ => Ok(false),
         }
