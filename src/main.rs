@@ -1,5 +1,6 @@
-mod lexer;
-mod interpret;
+pub mod lexer;
+pub mod interpret;
+pub mod runtime;
 
 use lexer::{Parser, Tokenizer};
 use interpret::Interpreter;
