@@ -89,6 +89,10 @@ impl Interpreter {
                     None => Err(RuntimeError::Return(Value::Null)),
                 }
             },
+            Statement::BreakStatement => {
+                // Break statement just returns a Break error to be caught by the loop
+                Err(RuntimeError::Break)
+            },
             Statement::FunctionDeclaration { name, parameters, return_type: _, body } => {
                 let func = Function {
                     name: name.name.clone(),

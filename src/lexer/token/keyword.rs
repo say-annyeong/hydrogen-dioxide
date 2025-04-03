@@ -18,6 +18,7 @@ pub enum Keyword {
     True,
     False,
     Null,
+    Break,
     // Add other keywords if necessary
 }
 
@@ -39,6 +40,7 @@ impl Display for Keyword {
             Keyword::True => "true",
             Keyword::False => "false",
             Keyword::Null => "null",
+            Keyword::Break => "break",
         };
         write!(f, "{}", keyword_str)
     }
@@ -62,6 +64,7 @@ pub fn lookup_keyword(s: &str) -> Option<Keyword> {
         "true" => Some(Keyword::True),
         "false" => Some(Keyword::False),
         "null" => Some(Keyword::Null),
+        "break" => Some(Keyword::Break),
         _ => None,
     }
 }

@@ -9,6 +9,7 @@ pub enum RuntimeError {
     TypeError(String), // E.g., "Cannot add string and integer"
     InvalidOperation(String),
     Return(Value), // Special case for return statements
+    Break, // Special case for break statements
 }
 
 impl fmt::Display for RuntimeError {
@@ -18,6 +19,7 @@ impl fmt::Display for RuntimeError {
              RuntimeError::TypeError(msg) => write!(f, "Type error: {}", msg),
              RuntimeError::InvalidOperation(msg) => write!(f, "Invalid operation: {}", msg),
              RuntimeError::Return(value) => write!(f, "Return value: {}", value), // Should this be displayed?
+             RuntimeError::Break => write!(f, "Break statement encountered outside of loop"),
          }
      }
 } 

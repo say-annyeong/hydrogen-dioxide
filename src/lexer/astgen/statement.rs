@@ -38,7 +38,9 @@ pub enum Statement {
         value: Option<Expression>,
     },
     ExpressionStatement(Expression), // For expressions used as statements (e.g., function calls)
-    ImportStatement(ImportDeclaration), 
+    ImportStatement(ImportDeclaration),
+    // Add break statement support
+    BreakStatement,
     // EmptyStatement // Optional, if needed for things like `;;` 
 }
 
