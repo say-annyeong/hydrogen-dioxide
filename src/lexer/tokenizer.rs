@@ -1,7 +1,7 @@
 use std::iter::Peekable;
 use std::str::Chars;
 
-use super::token::{lookup_keyword, Assignment, Keyword, Operator, Punctuation, Special, Token};
+use super::token::{lookup_keyword, Assignment, Keyword, Operator, Position, Punctuation, Special, Token};
 
 #[derive(Debug, Clone)]
 pub struct Tokenizer<'a> {
@@ -9,6 +9,9 @@ pub struct Tokenizer<'a> {
     current_pos: usize, // Tracks the byte position in the original input string
     line: usize,
     column: usize,
+    // Keep track of the start of the *next* token
+    start_line: usize,
+    start_column: usize,
 }
 
 impl<'a> Tokenizer<'a> {
@@ -18,6 +21,8 @@ impl<'a> Tokenizer<'a> {
             current_pos: 0,
             line: 1,
             column: 1, // Start column at 1
+            start_line: 1,
+            start_column: 1,
         }
     }
 
@@ -43,11 +48,28 @@ impl<'a> Tokenizer<'a> {
         self.input.peek()
     }
 
+    // Helper to create a Position struct for the *just consumed* token
+    fn current_token_pos(&self, start_line: usize, start_column: usize) -> Position {
+        Position {
+            start_line,
+            start_column,
+            end_line: self.line,
+            end_column: self.column, // `column` points to the *next* char
+        }
+    }
+
+    // Call this *before* consuming the first char of the next token
+    fn mark_token_start(&mut self) {
+        self.start_line = self.line;
+        self.start_column = self.column;
+    }
+
     fn skip_whitespace_and_comments(&mut self) {
         loop {
             match self.peek_char() {
                 Some(&ch) if ch.is_whitespace() => {
                     self.next_char(); // Consume whitespace
+                    self.mark_token_start(); // Reset start after whitespace
                 }
                 Some(&'/') => {
                     // Peek ahead to see if it's a comment without consuming '/' yet
@@ -65,6 +87,7 @@ impl<'a> Tokenizer<'a> {
                                 }
                                 self.next_char();
                             }
+                            self.mark_token_start(); // Reset start after // comment
                             // Continue outer loop to handle potential whitespace/comments after this one
                         }
                         Some('*') => { // It's a /* comment
@@ -88,6 +111,7 @@ impl<'a> Tokenizer<'a> {
                                 }
                                 // Handle EOF within comment? Should break loop naturally. Add error?
                             }
+                            self.mark_token_start(); // Reset start after /* comment
                              if nesting > 0 {
                                  // TODO: Record an error for unclosed multi-line comment
                                  eprintln!("Warning: Unclosed multi-line comment");
@@ -164,8 +188,8 @@ impl<'a> Tokenizer<'a> {
      // TODO: Handle escape sequences
     fn read_string(&mut self, quote_type: char) -> Result<String, String> {
         let mut s = String::new();
-        let start_line = self.line;
-        let start_col = self.column;
+        let _start_line = self.line; // Keep original start line for error msg
+        let _start_col = self.column; // Keep original start col for error msg
 
         loop {
             match self.next_char() {
@@ -196,7 +220,7 @@ impl<'a> Tokenizer<'a> {
                         // Newlines are only allowed in backtick strings
                         return Err(format!(
                             "Unterminated string literal: newline encountered (started at {}:{})",
-                            start_line, start_col
+                            _start_line, _start_col
                         ));
                     }
                      else {
@@ -204,9 +228,10 @@ impl<'a> Tokenizer<'a> {
                     }
                 }
                 None => {
+                     // Use the captured start line/col for the error message
                     return Err(format!(
                         "Unterminated string literal: EOF encountered (started at {}:{})",
-                        start_line, start_col
+                        _start_line, _start_col
                     )); // End of file before closing quote
                 }
             }
@@ -214,14 +239,17 @@ impl<'a> Tokenizer<'a> {
     }
 
 
-    pub fn next_token(&mut self) -> Token {
+    pub fn next_token(&mut self) -> (Token, Position) {
         self.skip_whitespace_and_comments();
 
-        let _start_pos = self.current_pos; // Prefix with underscore
+        // Mark the beginning of the potential token *before* consuming the first char
+        self.mark_token_start();
+        let start_line = self.start_line;
+        let start_col = self.start_column;
 
         match self.next_char() {
             Some(ch) => {
-                match ch {
+                let token = match ch {
                     // Punctuation
                     '(' => Token::Punctuation(Punctuation::LeftParen),
                     ')' => Token::Punctuation(Punctuation::RightParen),
@@ -317,118 +345,153 @@ impl<'a> Tokenizer<'a> {
 
                     // Unrecognized character
                     _ => Token::Special(Special::Illegal),
-                }
+                };
+                let pos = self.current_token_pos(start_line, start_col); // Calculate pos *after* token is formed
+                 (token, pos) // Return the tuple
             }
-            None => Token::Special(Special::Eof), // End of input
+            None => (Token::Special(Special::Eof), self.current_token_pos(start_line, start_col)), // EOF position
         }
     }
 }
 
 // Implement Iterator to make it easy to loop through tokens
 impl<'a> Iterator for Tokenizer<'a> {
-    type Item = Token;
+    type Item = (Token, Position); // Yield token AND position
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.next_token() {
-            Token::Special(Special::Eof) => None, // Stop iteration at EOF
-            token => Some(token),
-        }
+         // next_token now directly returns Option<(Token, Position)> effectively
+         let (token, position) = self.next_token();
+
+         match token {
+             Token::Special(Special::Eof) => None, // Stop iteration at EOF
+             _ => Some((token, position)), // Return the token and its position
+         }
+    }
+}
+
+// --- Update Tests --- //
+
+// Helper to compare tokens ignoring position - This is now simpler as Token doesn't have pos
+fn tokens_match(a: &Token, b: &Token) -> bool {
+    a == b // Use the derived PartialEq directly
+}
+
+// Helper to assert token sequence equality ignoring position
+fn assert_tokens_equal(actual: Vec<(Token, Position)>, expected: Vec<Token>) { // Actual is Vec<(Token, Position)>, Expected is Vec<Token>
+    assert_eq!(actual.len(), expected.len(),
+               "Mismatch in token count.\nActual: {:?}\nExpected: {:?}", actual.iter().map(|(t,_)| t).collect::<Vec<_>>(), expected);
+    for (i, ((act_token, _act_pos), exp_token)) in actual.iter().zip(expected.iter()).enumerate() {
+        assert!(tokens_match(act_token, exp_token),
+                "Token mismatch at index {}.\nActual: {:?}\nExpected: {:?}", i, act_token, exp_token);
     }
 }
 
 
-// --- Basic Tests ---
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::lexer::token::{Assignment, Keyword, Operator, Punctuation, Special, Token}; // Adjust path as needed
+    use super::*; // Brings in helpers like assert_tokens_equal
+    // No need for Position::default() here anymore
+    use crate::lexer::token::{Assignment, Keyword, Operator, Position, Punctuation, Special, Token};
 
-    fn lex_all(input: &str) -> Vec<Token> {
+    // Convenience functions create regular Tokens
+    fn ident(s: &str) -> Token { Token::Ident(s.to_string()) }
+    fn int(s: &str) -> Token { Token::Int(s.to_string()) }
+    fn float(s: &str) -> Token { Token::Float(s.to_string()) }
+    fn string(s: &str) -> Token { Token::String(s.to_string()) }
+    fn op(o: Operator) -> Token { Token::Operator(o) }
+    fn assign(a: Assignment) -> Token { Token::Assignment(a) }
+    fn punc(p: Punctuation) -> Token { Token::Punctuation(p) }
+    fn kw(k: Keyword) -> Token { Token::Keyword(k) }
+    fn special(s: Special) -> Token { Token::Special(s) }
+
+
+    fn lex_all(input: &str) -> Vec<(Token, Position)> { // Return type is correct
         Tokenizer::new(input).collect()
     }
 
+    // Tests remain the same structurally, using the helper constructors
     #[test]
     fn test_simple_assignment() {
         let input = "let x = 5;";
         let expected = vec![
-            Token::Keyword(Keyword::Let),
-            Token::Ident("x".to_string()),
-            Token::Assignment(Assignment::Assign),
-            Token::Int("5".to_string()),
-            Token::Punctuation(Punctuation::Semicolon),
+            kw(Keyword::Let),
+            ident("x"),
+            assign(Assignment::Assign),
+            int("5"),
+            punc(Punctuation::Semicolon),
         ];
-        assert_eq!(lex_all(input), expected);
+        assert_tokens_equal(lex_all(input), expected);
     }
 
     #[test]
     fn test_operators_and_parens() {
         let input = "(1 + 2) * 3";
          let expected = vec![
-            Token::Punctuation(Punctuation::LeftParen),
-            Token::Int("1".to_string()),
-            Token::Operator(Operator::Plus),
-            Token::Int("2".to_string()),
-            Token::Punctuation(Punctuation::RightParen),
-            Token::Operator(Operator::Multiply),
-            Token::Int("3".to_string()),
+            punc(Punctuation::LeftParen),
+            int("1"),
+            op(Operator::Plus),
+            int("2"),
+            punc(Punctuation::RightParen),
+            op(Operator::Multiply),
+            int("3"),
          ];
-        assert_eq!(lex_all(input), expected);
+        assert_tokens_equal(lex_all(input), expected);
     }
 
     #[test]
     fn test_keywords_and_ident() {
         let input = "fn main() { return false; }";
         let expected = vec![
-            Token::Keyword(Keyword::Fn),
-            Token::Ident("main".to_string()),
-            Token::Punctuation(Punctuation::LeftParen),
-            Token::Punctuation(Punctuation::RightParen),
-            Token::Punctuation(Punctuation::LeftBrace),
-            Token::Keyword(Keyword::Return),
-            Token::Keyword(Keyword::False),
-            Token::Punctuation(Punctuation::Semicolon),
-            Token::Punctuation(Punctuation::RightBrace),
+            kw(Keyword::Fn),
+            ident("main"),
+            punc(Punctuation::LeftParen),
+            punc(Punctuation::RightParen),
+            punc(Punctuation::LeftBrace),
+            kw(Keyword::Return),
+            kw(Keyword::False),
+            punc(Punctuation::Semicolon),
+            punc(Punctuation::RightBrace),
         ];
-        assert_eq!(lex_all(input), expected);
+        assert_tokens_equal(lex_all(input), expected);
     }
 
      #[test]
     fn test_string_literal() {
         let input = "let msg = \"Hello, Oxygen!\";";
         let expected = vec![
-            Token::Keyword(Keyword::Let),
-            Token::Ident("msg".to_string()),
-            Token::Assignment(Assignment::Assign),
-            Token::String("Hello, Oxygen!".to_string()),
-            Token::Punctuation(Punctuation::Semicolon),
+            kw(Keyword::Let),
+            ident("msg"),
+            assign(Assignment::Assign),
+            string("Hello, Oxygen!"),
+            punc(Punctuation::Semicolon),
         ];
-        assert_eq!(lex_all(input), expected);
+        assert_tokens_equal(lex_all(input), expected);
     }
 
      #[test]
     fn test_single_quote_string_literal() {
         let input = "let msg = 'World';";
         let expected = vec![
-            Token::Keyword(Keyword::Let),
-            Token::Ident("msg".to_string()),
-            Token::Assignment(Assignment::Assign),
-            Token::String("World".to_string()),
-            Token::Punctuation(Punctuation::Semicolon),
+            kw(Keyword::Let),
+            ident("msg"),
+            assign(Assignment::Assign),
+            string("World"),
+            punc(Punctuation::Semicolon),
         ];
-        assert_eq!(lex_all(input), expected);
+        assert_tokens_equal(lex_all(input), expected);
     }
 
     #[test]
     fn test_backtick_string_literal() {
         let input = "let html = `<html>\n<body></body>\n</html>`;";
         let expected = vec![
-            Token::Keyword(Keyword::Let),
-            Token::Ident("html".to_string()),
-            Token::Assignment(Assignment::Assign),
-            Token::String("<html>\n<body></body>\n</html>".to_string()),
-            Token::Punctuation(Punctuation::Semicolon),
+            kw(Keyword::Let),
+            ident("html"),
+            assign(Assignment::Assign),
+            string("<html>\n<body></body>\n</html>"),
+            punc(Punctuation::Semicolon),
         ];
-        assert_eq!(lex_all(input), expected);
+        assert_tokens_equal(lex_all(input), expected);
     }
 
 
@@ -436,25 +499,26 @@ mod tests {
     fn test_string_escape_sequences() {
         let input = r#"let escapes = "line1\nline2\t'quote'\"quote\"\\backslash";"#;
         let expected = vec![
-            Token::Keyword(Keyword::Let),
-            Token::Ident("escapes".to_string()),
-            Token::Assignment(Assignment::Assign),
-            Token::String("line1\nline2\t'quote'\"quote\"\\backslash".to_string()),
-            Token::Punctuation(Punctuation::Semicolon),
+            kw(Keyword::Let),
+            ident("escapes"),
+            assign(Assignment::Assign),
+            string("line1\nline2\t'quote'\"quote\"\\backslash"),
+            punc(Punctuation::Semicolon),
         ];
-        assert_eq!(lex_all(input), expected);
+        assert_tokens_equal(lex_all(input), expected);
     }
 
     #[test]
     fn test_unterminated_string() {
         let input = "let bad = \"hello";
-        // Expecting Illegal token at the end because read_string returns Err
-         let tokens = lex_all(input);
-         assert_eq!(tokens.len(), 4);
-         assert_eq!(tokens[0], Token::Keyword(Keyword::Let));
-         assert_eq!(tokens[1], Token::Ident("bad".to_string()));
-         assert_eq!(tokens[2], Token::Assignment(Assignment::Assign));
-         assert_eq!(tokens[3], Token::Special(Special::Illegal)); // String reading fails
+        let tokens = lex_all(input);
+         let expected = vec![
+             kw(Keyword::Let),
+             ident("bad"),
+             assign(Assignment::Assign),
+             special(Special::Illegal), // String reading fails
+         ];
+         assert_tokens_equal(tokens, expected);
     }
 
 
@@ -462,27 +526,27 @@ mod tests {
     fn test_float_literal() {
         let input = "let pi = 3.14159;";
         let expected = vec![
-            Token::Keyword(Keyword::Let),
-            Token::Ident("pi".to_string()),
-            Token::Assignment(Assignment::Assign),
-            Token::Float("3.14159".to_string()),
-            Token::Punctuation(Punctuation::Semicolon),
+            kw(Keyword::Let),
+            ident("pi"),
+            assign(Assignment::Assign),
+            float("3.14159"),
+            punc(Punctuation::Semicolon),
         ];
-        assert_eq!(lex_all(input), expected);
+        assert_tokens_equal(lex_all(input), expected);
     }
 
      #[test]
      fn test_dot_operator_vs_float() {
          let input = "obj.method(5.0)";
          let expected = vec![
-             Token::Ident("obj".to_string()),
-             Token::Punctuation(Punctuation::Dot),
-             Token::Ident("method".to_string()),
-             Token::Punctuation(Punctuation::LeftParen),
-             Token::Float("5.0".to_string()),
-             Token::Punctuation(Punctuation::RightParen),
+             ident("obj"),
+             punc(Punctuation::Dot),
+             ident("method"),
+             punc(Punctuation::LeftParen),
+             float("5.0"),
+             punc(Punctuation::RightParen),
          ];
-        assert_eq!(lex_all(input), expected);
+        assert_tokens_equal(lex_all(input), expected);
      }
 
 
@@ -490,21 +554,21 @@ mod tests {
     fn test_multi_char_operators() {
         let input = "x += 1; y -= 2; z *= 3; w /= 4; m %= 5; a == b; c != d; e <= f; g >= h; cond && other; next || prev; !flag; fn() -> void";
         let expected = vec![
-            Token::Ident("x".to_string()), Token::Assignment(Assignment::PlusAssign), Token::Int("1".to_string()), Token::Punctuation(Punctuation::Semicolon),
-            Token::Ident("y".to_string()), Token::Assignment(Assignment::MinusAssign), Token::Int("2".to_string()), Token::Punctuation(Punctuation::Semicolon),
-            Token::Ident("z".to_string()), Token::Assignment(Assignment::MultiplyAssign), Token::Int("3".to_string()), Token::Punctuation(Punctuation::Semicolon),
-            Token::Ident("w".to_string()), Token::Assignment(Assignment::DivideAssign), Token::Int("4".to_string()), Token::Punctuation(Punctuation::Semicolon),
-            Token::Ident("m".to_string()), Token::Assignment(Assignment::ModuloAssign), Token::Int("5".to_string()), Token::Punctuation(Punctuation::Semicolon),
-            Token::Ident("a".to_string()), Token::Operator(Operator::Equal), Token::Ident("b".to_string()), Token::Punctuation(Punctuation::Semicolon),
-            Token::Ident("c".to_string()), Token::Operator(Operator::NotEqual), Token::Ident("d".to_string()), Token::Punctuation(Punctuation::Semicolon),
-            Token::Ident("e".to_string()), Token::Operator(Operator::LessEqual), Token::Ident("f".to_string()), Token::Punctuation(Punctuation::Semicolon),
-            Token::Ident("g".to_string()), Token::Operator(Operator::GreaterEqual), Token::Ident("h".to_string()), Token::Punctuation(Punctuation::Semicolon),
-            Token::Ident("cond".to_string()), Token::Operator(Operator::And), Token::Ident("other".to_string()), Token::Punctuation(Punctuation::Semicolon),
-            Token::Ident("next".to_string()), Token::Operator(Operator::Or), Token::Ident("prev".to_string()), Token::Punctuation(Punctuation::Semicolon),
-            Token::Operator(Operator::Not), Token::Ident("flag".to_string()), Token::Punctuation(Punctuation::Semicolon),
-             Token::Keyword(Keyword::Fn), Token::Punctuation(Punctuation::LeftParen), Token::Punctuation(Punctuation::RightParen), Token::Punctuation(Punctuation::Arrow), Token::Ident("void".to_string()), // Treat void as ident for now
+            ident("x"), assign(Assignment::PlusAssign), int("1"), punc(Punctuation::Semicolon),
+            ident("y"), assign(Assignment::MinusAssign), int("2"), punc(Punctuation::Semicolon),
+            ident("z"), assign(Assignment::MultiplyAssign), int("3"), punc(Punctuation::Semicolon),
+            ident("w"), assign(Assignment::DivideAssign), int("4"), punc(Punctuation::Semicolon),
+            ident("m"), assign(Assignment::ModuloAssign), int("5"), punc(Punctuation::Semicolon),
+            ident("a"), op(Operator::Equal), ident("b"), punc(Punctuation::Semicolon),
+            ident("c"), op(Operator::NotEqual), ident("d"), punc(Punctuation::Semicolon),
+            ident("e"), op(Operator::LessEqual), ident("f"), punc(Punctuation::Semicolon),
+            ident("g"), op(Operator::GreaterEqual), ident("h"), punc(Punctuation::Semicolon),
+            ident("cond"), op(Operator::And), ident("other"), punc(Punctuation::Semicolon),
+            ident("next"), op(Operator::Or), ident("prev"), punc(Punctuation::Semicolon),
+            op(Operator::Not), ident("flag"), punc(Punctuation::Semicolon),
+             kw(Keyword::Fn), punc(Punctuation::LeftParen), punc(Punctuation::RightParen), punc(Punctuation::Arrow), ident("void"), // Treat void as ident for now
         ];
-        assert_eq!(lex_all(input), expected);
+        assert_tokens_equal(lex_all(input), expected);
     }
 
      #[test]
@@ -519,13 +583,13 @@ mod tests {
              let v = 5 / 2; // Division, not comment
          "#;
          let expected = vec![
-             Token::Keyword(Keyword::Let), Token::Ident("x".to_string()), Token::Assignment(Assignment::Assign), Token::Int("1".to_string()), Token::Punctuation(Punctuation::Semicolon),
-             Token::Keyword(Keyword::Let), Token::Ident("y".to_string()), Token::Assignment(Assignment::Assign), Token::Int("2".to_string()), Token::Punctuation(Punctuation::Semicolon),
-             Token::Keyword(Keyword::Let), Token::Ident("z".to_string()), Token::Assignment(Assignment::Assign), Token::Int("3".to_string()), Token::Punctuation(Punctuation::Semicolon),
-             Token::Keyword(Keyword::Let), Token::Ident("w".to_string()), Token::Assignment(Assignment::Assign), Token::Int("4".to_string()), Token::Punctuation(Punctuation::Semicolon),
-             Token::Keyword(Keyword::Let), Token::Ident("v".to_string()), Token::Assignment(Assignment::Assign), Token::Int("5".to_string()), Token::Operator(Operator::Divide), Token::Int("2".to_string()), Token::Punctuation(Punctuation::Semicolon),
+             kw(Keyword::Let), ident("x"), assign(Assignment::Assign), int("1"), punc(Punctuation::Semicolon),
+             kw(Keyword::Let), ident("y"), assign(Assignment::Assign), int("2"), punc(Punctuation::Semicolon),
+             kw(Keyword::Let), ident("z"), assign(Assignment::Assign), int("3"), punc(Punctuation::Semicolon),
+             kw(Keyword::Let), ident("w"), assign(Assignment::Assign), int("4"), punc(Punctuation::Semicolon),
+             kw(Keyword::Let), ident("v"), assign(Assignment::Assign), int("5"), op(Operator::Divide), int("2"), punc(Punctuation::Semicolon),
          ];
-        assert_eq!(lex_all(input), expected);
+        assert_tokens_equal(lex_all(input), expected);
      }
 
 
@@ -533,12 +597,12 @@ mod tests {
     fn test_illegal_char() {
         let input = "let a = @;";
         let expected = vec![
-            Token::Keyword(Keyword::Let),
-            Token::Ident("a".to_string()),
-            Token::Assignment(Assignment::Assign),
-            Token::Special(Special::Illegal), // '@' is illegal
-            Token::Punctuation(Punctuation::Semicolon),
+            kw(Keyword::Let),
+            ident("a"),
+            assign(Assignment::Assign),
+            special(Special::Illegal), // '@' is illegal
+            punc(Punctuation::Semicolon),
         ];
-        assert_eq!(lex_all(input), expected);
+        assert_tokens_equal(lex_all(input), expected);
     }
 }

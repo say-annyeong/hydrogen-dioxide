@@ -6,20 +6,29 @@ use super::astgen::{
     ImportDeclaration, Literal, MethodDefinition, Program, Statement, StructDefinition,
     TypeAnnotation, UnaryOperator, /* other AST nodes */
 };
-use super::token::{Assignment, Keyword, Operator, Punctuation, Special, Token};
+use super::token::{Assignment, Keyword, Operator, Punctuation, Special, Token, Position};
 use super::tokenizer::Tokenizer;
 use std::iter::Peekable;
 
 // Basic error type for parsing
 #[derive(Debug, Clone, PartialEq)]
 pub enum ParseError {
-    UnexpectedToken(String, String), // Found, Expected
-    UnexpectedEof(String),           // Expected
-    Other(String),
+    // Found Token (Debug string), Expected description, Position
+    UnexpectedToken(String, String, Position),
+    // Expected description, Position of EOF
+    UnexpectedEof(String, Position),
+    // General error message, Position where it occurred (best guess)
+    Other(String, Position),
 }
 
+// Wrapper for the tokenizer iterator to simplify peeking
+type TokenStreamItem = (Token, Position);
+type TokenStreamIterator<'a> = Peekable<Tokenizer<'a>>;
+
 pub struct Parser<'a> {
-    tokenizer: Peekable<Tokenizer<'a>>,
+    tokenizer: TokenStreamIterator<'a>,
+    // Store the position of the *last consumed* token for error reporting
+    last_pos: Position,
     errors: Vec<ParseError>,
 }
 
@@ -27,14 +36,25 @@ pub struct Parser<'a> {
 // Consumes the next token if it matches the pattern, otherwise returns Err.
 macro_rules! consume_token {
     ($self:ident, $pattern:pat => $expr:expr, $expected_msg:expr) => {
-        match $self.next_token() {
-            Some($pattern) => Ok($expr),
-            Some(other) => Err(ParseError::UnexpectedToken(
-                format!("{:?}", other),
-                $expected_msg.to_string(),
-            )),
-            None => Err(ParseError::UnexpectedEof($expected_msg.to_string())),
-        }
+         {
+             // Peek first to get position before consuming
+             let pos = match $self.peek_token_pos() {
+                Some(p) => *p, // Deref the borrowed position
+                None => $self.last_pos, // Use last known position if EOF
+             };
+             match $self.next_token() {
+                 Some($pattern) => Ok($expr),
+                 Some(other) => Err(ParseError::UnexpectedToken(
+                     format!("{:?}", other),
+                     $expected_msg.to_string(),
+                     pos // Use the position from peek or last_pos
+                 )),
+                 None => Err(ParseError::UnexpectedEof(
+                     $expected_msg.to_string(),
+                     pos // Use the position from peek or last_pos
+                 )),
+             }
+         }
     };
      // Simpler version without extracting value
      ($self:ident, $pattern:pat, $expected_msg:expr) => {
@@ -82,23 +102,46 @@ fn get_token_precedence(op: &Operator) -> Precedence {
     }
 }
 
+// Helper to get token precedence from a borrowed Token
+fn get_peeked_token_precedence(token: &Token) -> Precedence {
+    match token {
+        Token::Operator(op) => get_token_precedence(op),
+         Token::Punctuation(Punctuation::LeftParen) => Precedence::Call,
+         Token::Punctuation(Punctuation::Dot) => Precedence::Call,
+         Token::Punctuation(Punctuation::LeftBracket) => Precedence::Call,
+        _ => Precedence::Lowest,
+    }
+}
+
 impl<'a> Parser<'a> {
     pub fn new(tokenizer: Tokenizer<'a>) -> Self {
         Parser {
             tokenizer: tokenizer.peekable(),
+            last_pos: Position::default(),
             errors: Vec::new(),
         }
     }
 
-    // --- Token Helpers ---
+    // --- Token Helpers --- Updated for (Token, Position) ---
     fn peek_token(&mut self) -> Option<&Token> {
-        self.tokenizer.peek()
+         self.tokenizer.peek().map(|(token, _pos)| token)
+    }
+
+    fn peek_token_pos(&mut self) -> Option<&Position> {
+        self.tokenizer.peek().map(|(_token, pos)| pos)
     }
 
     fn next_token(&mut self) -> Option<Token> {
-        self.tokenizer.next()
+         match self.tokenizer.next() {
+             Some((token, pos)) => {
+                 self.last_pos = pos; // Update last position
+                 Some(token)
+             }
+             None => None,
+         }
     }
 
+    // Checks the token *kind*, ignoring position
     fn check_peek(&mut self, expected: &Token) -> bool {
         self.peek_token().map_or(false, |t| t == expected)
     }
@@ -116,8 +159,8 @@ impl<'a> Parser<'a> {
                  self.next_token(); // Consume
                  Ok(())
              }
-             Some(other) => Err(ParseError::UnexpectedToken(format!("{:?}", other), expected_msg.to_string())),
-             None => Err(ParseError::UnexpectedEof(expected_msg.to_string())),
+             Some(other) => Err(ParseError::UnexpectedToken(format!("{:?}", other), expected_msg.to_string(), self.last_pos)),
+             None => Err(ParseError::UnexpectedEof(expected_msg.to_string(), self.last_pos)),
          }
      }
 
@@ -135,24 +178,10 @@ impl<'a> Parser<'a> {
             match self.parse_statement() {
                 Ok(stmt) => statements.push(stmt),
                 Err(e) => {
+                    // Record the first error encountered
                     self.record_error(e);
-                    // Error recovery
-                    while let Some(token) = self.peek_token() {
-                        match token {
-                            Token::Punctuation(Punctuation::Semicolon)
-                            | Token::Punctuation(Punctuation::RightBrace) => {
-                                if *token == Token::Punctuation(Punctuation::Semicolon) {
-                                    self.next_token();
-                                }
-                                break;
-                            }
-                            // Maybe recover on keywords too?
-                             Token::Keyword(_) => break,
-                            _ => {
-                                self.next_token();
-                            }
-                        }
-                    }
+                    // Stop parsing immediately after the first error
+                    break;
                 }
             }
         }
@@ -174,10 +203,10 @@ impl<'a> Parser<'a> {
             }
              Some(Token::Punctuation(Punctuation::LeftBrace)) => {
                  // Allow standalone block? Let's disallow for now.
-                  Err(ParseError::UnexpectedToken(format!("{:?}", self.peek_token().unwrap()), "Expected statement start keyword or expression".to_string()))
+                  Err(ParseError::UnexpectedToken(format!("{:?}", self.peek_token().unwrap()), "Expected statement start keyword or expression".to_string(), self.last_pos))
              }
             Some(_) => self.parse_expression_statement(),
-            None => Err(ParseError::UnexpectedEof("Expected statement".to_string())),
+            None => Err(ParseError::UnexpectedEof("Expected statement".to_string(), self.last_pos)),
         }
     }
 
@@ -313,10 +342,10 @@ impl<'a> Parser<'a> {
          self.next_token(); // Consume 'for'
          let variable = self.parse_identifier()?;
          // Expect the identifier "in" - not a keyword in the spec
-          let in_token = self.next_token().ok_or_else(|| ParseError::UnexpectedEof("Expected 'in' after variable in for loop".to_string()))?;
+          let in_token = self.next_token().ok_or_else(|| ParseError::UnexpectedEof("Expected 'in' after variable in for loop".to_string(), self.last_pos))?;
           match in_token {
               Token::Ident(ref s) if s == "in" => { /* continue */ }
-              _ => return Err(ParseError::UnexpectedToken(format!("{:?}", in_token), "Expected 'in'".to_string())),
+              _ => return Err(ParseError::UnexpectedToken(format!("{:?}", in_token), "Expected 'in'".to_string(), self.last_pos)),
           }
 
          let iterable = self.parse_expression(Precedence::Lowest)?;
@@ -338,7 +367,7 @@ impl<'a> Parser<'a> {
                   Some(Token::Keyword(Keyword::Fn)) => {
                       // TODO: Implement Method parsing - requires handling `self`?
                       // For now, consume tokens related to a potential method to avoid infinite loop
-                      self.record_error(ParseError::Other("Method parsing within struct not implemented yet.".to_string()));
+                      self.record_error(ParseError::Other("Method parsing within struct not implemented yet.".to_string(), self.last_pos));
                       // Consume 'fn' and potentially identifier + block to recover somewhat
                       self.next_token(); // consume fn
                        if let Some(Token::Ident(_)) = self.peek_token() { self.next_token(); }
@@ -360,11 +389,11 @@ impl<'a> Parser<'a> {
                        fields.push(FieldDefinition { name: field_name, type_annotation: field_type });
                   }
                    Some(other) => {
-                        let e = ParseError::UnexpectedToken(format!("{:?}", other), "Expected field (identifier) or method ('fn') in struct body".to_string());
+                        let e = ParseError::UnexpectedToken(format!("{:?}", other), "Expected field (identifier) or method ('fn') in struct body".to_string(), self.last_pos);
                         self.record_error(e);
                         self.next_token(); // Consume the unexpected token to attempt recovery
                    }
-                  None => return Err(ParseError::UnexpectedEof("Expected field, method, or '}' in struct body".to_string())),
+                  None => return Err(ParseError::UnexpectedEof("Expected field, method, or '}' in struct body".to_string(), self.last_pos)),
               }
           }
 
@@ -407,7 +436,7 @@ impl<'a> Parser<'a> {
               Ok(Statement::ImportStatement(ImportDeclaration::ImportSymbols { path, symbols }))
           } else {
                // Should not happen if called correctly from parse_statement
-               Err(ParseError::Other("Internal error: parse_import_statement called unexpectedly".to_string()))
+               Err(ParseError::Other("Internal error: parse_import_statement called unexpectedly".to_string(), self.last_pos))
           }
       }
 
@@ -513,9 +542,10 @@ impl<'a> Parser<'a> {
                  Err(ParseError::UnexpectedToken(
                      token_str,
                      "Expected literal, identifier, '(', '-', '!', '[', or '{'".to_string(),
+                     self.last_pos
                  ))
             }
-            None => Err(ParseError::UnexpectedEof("Expected expression".to_string())),
+            None => Err(ParseError::UnexpectedEof("Expected expression".to_string(), self.last_pos)),
         }?; // Apply '?' to the Result produced by the match block
 
         // --- Infix/Postfix parsing loop --- (Revised for correct precedence climbing)
@@ -526,13 +556,7 @@ impl<'a> Parser<'a> {
                  None => break, // No more tokens
              };
 
-             let peeked_precedence = match peeked_token {
-                 Token::Operator(op) => get_token_precedence(op),
-                 Token::Punctuation(Punctuation::LeftParen) => Precedence::Call,
-                 Token::Punctuation(Punctuation::Dot) => Precedence::Call,
-                 Token::Punctuation(Punctuation::LeftBracket) => Precedence::Call,
-                 _ => Precedence::Lowest, // Not an infix/postfix operator
-             };
+             let peeked_precedence = get_peeked_token_precedence(peeked_token);
 
              // The core Pratt check: only continue if the next token binds tighter than the current context
              if _precedence >= peeked_precedence {
@@ -594,7 +618,7 @@ impl<'a> Parser<'a> {
                       };
                   }
                  // This case should ideally not be reached if peeked_precedence logic is correct
-                 other => return Err(ParseError::Other(format!("Unexpected token {:?} in infix/postfix position after precedence check", other))),
+                 other => return Err(ParseError::Other(format!("Unexpected token {:?} in infix/postfix position after precedence check", other), self.last_pos)),
              }
          }
 
@@ -665,7 +689,8 @@ impl<'a> Parser<'a> {
 mod tests {
     use super::*;
     use crate::lexer::astgen::*; // Import all ast nodes for convenience in tests
-    use crate::lexer::token::Assignment; // Keep specific token imports if needed
+    // No need for Assignment import if not used directly in asserts
+    // use crate::lexer::token::Assignment;
     use crate::lexer::Tokenizer;
 
     // Helper to parse code and return program, checking for errors
@@ -675,7 +700,9 @@ mod tests {
         let program = parser.parse_program();
         assert!(
             parser.errors().is_empty(),
-            "Parse failed with errors: {:?}",
+             // Enhance error message to show the code and error details
+             "Parse failed on input:\n```\n{}\n```\nErrors: {:#?}",
+             code,
             parser.errors()
         );
         program

@@ -12,6 +12,15 @@ pub use operators::Operator;
 pub use punctuation::Punctuation;
 pub use special::Special;
 
+/// Represents a position in the source code.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Position {
+    pub start_line: usize,
+    pub start_column: usize,
+    pub end_line: usize,
+    pub end_column: usize,
+}
+
 /// Represents a token in the Oxygen language.
 #[derive(Debug, PartialEq, Clone)] // Using Clone for easier handling, potentially review if performance critical
 pub enum Token {
