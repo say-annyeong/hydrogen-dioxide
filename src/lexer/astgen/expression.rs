@@ -37,5 +37,9 @@ pub enum Expression {
         base: Box<Expression>,
         member: Identifier, // The field or method name being accessed
     },
+    Assignment {
+        target: Box<Expression>, // L-value: Identifier, MemberAccess, IndexAccess
+        value: Box<Expression>,
+    },
     // TODO: Add BlockExpression if needed (e.g., for if/else expressions)
 }

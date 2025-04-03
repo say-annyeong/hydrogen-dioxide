@@ -75,7 +75,7 @@ macro_rules! consume_optional_token {
  }
 
 // --- Precedence Enum (for future Pratt parser) ---
-#[derive(PartialEq, PartialOrd, Debug, Clone, Copy)]
+#[derive(PartialEq, PartialOrd, Ord, Eq, Debug, Clone, Copy)]
 enum Precedence {
     Lowest,
     Assign,      // =
@@ -109,6 +109,7 @@ fn get_peeked_token_precedence(token: &Token) -> Precedence {
          Token::Punctuation(Punctuation::LeftParen) => Precedence::Call,
          Token::Punctuation(Punctuation::Dot) => Precedence::Call,
          Token::Punctuation(Punctuation::LeftBracket) => Precedence::Call,
+         Token::Assignment(Assignment::Assign) => Precedence::Assign,
         _ => Precedence::Lowest,
     }
 }
@@ -201,10 +202,16 @@ impl<'a> Parser<'a> {
             Some(Token::Keyword(Keyword::Import)) | Some(Token::Keyword(Keyword::From)) => {
                 self.parse_import_statement()
             }
-             Some(Token::Punctuation(Punctuation::LeftBrace)) => {
-                 // Allow standalone block? Let's disallow for now.
-                  Err(ParseError::UnexpectedToken(format!("{:?}", self.peek_token().unwrap()), "Expected statement start keyword or expression".to_string(), self.last_pos))
-             }
+            Some(Token::Punctuation(Punctuation::LeftBrace)) => {
+                // Allow standalone block? Let's disallow for now.
+                Err(ParseError::UnexpectedToken(format!("{:?}", self.peek_token().unwrap()), "Expected statement start keyword or expression".to_string(), self.last_pos))
+            }
+            // Handle empty statements (lone semicolons)
+            Some(Token::Punctuation(Punctuation::Semicolon)) => {
+                self.next_token(); // Consume the semicolon
+                // Return an empty expression statement
+                Ok(Statement::ExpressionStatement(Expression::Literal(Literal::Null)))
+            }
             Some(_) => self.parse_expression_statement(),
             None => Err(ParseError::UnexpectedEof("Expected statement".to_string(), self.last_pos)),
         }
@@ -442,6 +449,12 @@ impl<'a> Parser<'a> {
 
 
     fn parse_expression_statement(&mut self) -> Result<Statement, ParseError> {
+        // Check if the next token is a semicolon, which would indicate an empty expression
+        if self.check_peek(&Token::Punctuation(Punctuation::Semicolon)) {
+            self.next_token(); // Consume the semicolon
+            return Ok(Statement::ExpressionStatement(Expression::Literal(Literal::Null)));
+        }
+        
         let expression = self.parse_expression(Precedence::Lowest)?;
         // Optional semicolon
         consume_optional_token!(self, Token::Punctuation(Punctuation::Semicolon));
@@ -591,6 +604,35 @@ impl<'a> Parser<'a> {
                            op: binary_op,
                            right: Box::new(right_expr),
                       };
+                 }
+                 Token::Assignment(Assignment::Assign) => {
+                     // Assignment is right-associative, parse RHS with slightly lower precedence
+                     // We subtract 1 from the current precedence level for right-associativity.
+                     let current_precedence = Precedence::Assign;
+                     // Handle potential underflow if Lowest is 0. Ensure Lowest is truly the lowest.
+                     let right_precedence = if current_precedence > Precedence::Lowest {
+                         // Find the next lower precedence level (this is slightly hacky without explicit enum values)
+                         // A better approach might be to define integer values for precedence levels.
+                         // For now, just using Lowest seems the most robust way to handle right-associativity
+                         // in the absence of easily decrementable precedence. Let's revert to that.
+                         // current_precedence - 1; // This requires defining subtraction or integer values.
+                         Precedence::Lowest // Reverting to Lowest - Less correct but avoids complex enum logic for now.
+                                         // NOTE: This makes assignment LEFT-associative (a = b = c -> (a = b) = c)
+                                         // We need a better precedence system to fix this properly. For example:
+                                         // let value = self.parse_expression(Precedence::Assign - 1)?; // If precedence were integers
+                     } else {
+                         Precedence::Lowest
+                     };
+                     
+                     // Parse the right side of the assignment (the value being assigned)
+                     let value = self.parse_expression(Precedence::Lowest)?; // Keep as Lowest for left-associative behavior
+
+                     // Check if left_expr is a valid L-value (Identifier, MemberAccess, etc.)
+                     // This check is better done during semantic analysis or interpretation.
+                     left_expr = Expression::Assignment {
+                         target: Box::new(left_expr),
+                         value: Box::new(value),
+                     };
                  }
                  Token::Punctuation(Punctuation::LeftParen) => {
                       // Arguments are parsed with lowest precedence
