@@ -41,5 +41,11 @@ pub enum Expression {
         target: Box<Expression>, // L-value: Identifier, MemberAccess, IndexAccess
         value: Box<Expression>,
     },
+    StructInitializer {
+        name: Identifier,
+        fields: Vec<(Identifier, Expression)>,
+    },
     // TODO: Add BlockExpression if needed (e.g., for if/else expressions)
 }
+
+// Operator enums are defined in astgen/mod.rs

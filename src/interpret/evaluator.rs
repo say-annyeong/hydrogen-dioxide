@@ -3,7 +3,7 @@ use crate::lexer::astgen::{
     IfAlternative, ImportDeclaration, ImportSource, ExportDeclaration // Ensure IfAlternative, ImportDeclaration, and ImportSource are imported if used
 };
 use crate::runtime; // Import the runtime module (for stdlib)
-use crate::interpret::value::{Value, Function};
+use crate::interpret::value::{Value, Function, StructDefinitionValue, StructInstanceValue};
 use crate::interpret::environment::Environment;
 use crate::interpret::error::RuntimeError;
 
@@ -12,6 +12,7 @@ use std::cell::RefCell;
 use std::fs; // Import fs for file reading
 use crate::lexer::{Tokenizer, Parser}; // Import Tokenizer and Parser
 use std::path::{Path, PathBuf}; // Import Path and PathBuf
+use std::collections::HashMap; // Add HashMap
 
 // --- Interpreter ---
 
@@ -254,9 +255,15 @@ impl Interpreter {
                 self.eval_expression(iterable)?;
                Ok(())
             },
-            Statement::StructDeclaration { .. } => {
-                eprintln!("Warning: Struct declaration encountered but not interpreted.");
-               Ok(())
+            Statement::StructDeclaration(struct_def) => {
+                // Store the struct definition itself in the environment
+                let def_value = StructDefinitionValue {
+                    name: struct_def.name.clone(),
+                    fields: struct_def.fields.clone(),
+                    // methods added later
+                };
+                self.environment.borrow_mut().define(struct_def.name.name.clone(), Value::StructDefinition(def_value));
+                Ok(())
             },
             Statement::ImportStatement(decl) => self.eval_import_statement(decl),
             Statement::ExportStatement(_) => {
@@ -373,6 +380,7 @@ impl Interpreter {
             Expression::DictInitializer { pairs } => self.eval_dict_initializer(pairs),
             Expression::IndexAccess { base, index } => self.eval_index_access(base, index),
             Expression::MemberAccess { base, member } => self.eval_member_access(base, member),
+            Expression::StructInitializer { name, fields } => self.eval_struct_initializer(name, fields),
         }
     }
 
@@ -467,55 +475,71 @@ impl Interpreter {
     }
 
     fn eval_function_call(&mut self, callee: &Expression, arguments: &[Expression]) -> Result<Value, RuntimeError> {
+        // Evaluate the callee expression first
         let callee_val = self.eval_expression(callee)?;
-        let mut arg_values = Vec::new();
+
+        // Evaluate arguments
+        let mut arg_values = Vec::with_capacity(arguments.len());
         for arg_expr in arguments {
             arg_values.push(self.eval_expression(arg_expr)?);
         }
 
         match callee_val {
             Value::Function(func) => {
-                if func.is_builtin {
-                    // Check for string methods
-                    if func.name == "to_upper" || func.name == "to_lower" {
-                        // Retrieve the string value from the environment
-                        if let Some(Value::String(s)) = func.env.borrow().get("__self") {
-                            return if func.name == "to_upper" {
-                                Ok(Value::String(s.to_uppercase()))
-                            } else {
-                                Ok(Value::String(s.to_lowercase()))
-                            };
+                // Check if it's a built-in method captured via member access
+                if func.is_builtin && func.env.borrow().get("__self").is_some() {
+                    // Retrieve the captured 'self' value
+                    let self_val = func.env.borrow().get("__self")
+                        .ok_or_else(|| RuntimeError::InvalidOperation("Internal error: Missing '__self' in built-in method env".to_string()))?;
+
+                    // Execute the specific built-in method logic
+                    match (&self_val, func.name.as_str()) {
+                        (Value::String(s), "to_upper") => Ok(Value::String(s.to_uppercase())),
+                        (Value::String(s), "to_lower") => Ok(Value::String(s.to_lowercase())),
+                        (Value::List(l), "contains") => {
+                            if arg_values.len() != 1 {
+                                return Err(RuntimeError::TypeError(format!(
+                                    ".contains() expects 1 argument, got {}", arg_values.len()
+                                )));
+                            }
+                            let value_to_find = &arg_values[0];
+                            // Perform equality check using values_equal helper
+                            let mut found = false;
+                            for item in l.iter() {
+                                if self.values_equal(item.clone(), value_to_find.clone())? {
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            Ok(Value::Boolean(found))
                         }
+                        // Add other built-in methods here (e.g., list.push, string.split)
+                        _ => Err(RuntimeError::InvalidOperation(format!(
+                            "Internal error: Unhandled built-in method '{}' for type {}", func.name, self_val
+                        )))
                     }
-                    
-                    // Otherwise, call the standard builtin function
-                    self.call_builtin_function(&func.name, arg_values)
+                } else if func.is_builtin {
+                    // Regular Rust built-in function (like print, len, type, abs, max, min)
+                    // Note: We use the function name stored in the Function struct now.
+                    self.call_rust_builtin_function(&func.name, arg_values)
                 } else {
+                    // User-defined Oxygen function
                     self.call_user_function(*func, arg_values)
                 }
             }
-            // Special case for .toString() method-like call
-            _ if matches!(callee, Expression::MemberAccess { member, .. } if member.name == "toString") => {
-                if !arguments.is_empty() {
-                    return Err(RuntimeError::TypeError(".toString() expects no arguments".to_string()));
-                }
-                if let Expression::MemberAccess { base, .. } = callee {
-                    let base_val = self.eval_expression(base)?;
-                    Ok(Value::String(base_val.to_string())) // Use Display impl
-                } else {
-                    unreachable!()
-                }
-            }
+            // Remove previous special case for toString - should be handled by member access now
             _ => Err(RuntimeError::TypeError(format!("Cannot call non-function value: {}", callee_val))),
         }
     }
 
-    fn call_builtin_function(&mut self, name: &str, args: Vec<Value>) -> Result<Value, RuntimeError> {
+    // Renamed from call_builtin_function to be more specific
+    fn call_rust_builtin_function(&mut self, name: &str, args: Vec<Value>) -> Result<Value, RuntimeError> {
          match name {
              "print" => runtime::stdlib::builtin_print(args),
-             "len" => runtime::stdlib::builtin_len(args),
+             "len" => runtime::stdlib::builtin_len(args), // Keep general len() function
              "type" => runtime::stdlib::builtin_type(args),
-             _ => Err(RuntimeError::InvalidOperation(format!("Unknown built-in function: {}", name))),
+             // Note: abs, max, min are loaded from Oxygen stdlib now, not handled here.
+             _ => Err(RuntimeError::InvalidOperation(format!("Unknown Rust built-in function: {}", name))),
          }
     }
 
@@ -601,44 +625,114 @@ impl Interpreter {
 
     fn eval_member_access(&mut self, base_expr: &Expression, member: &Identifier) -> Result<Value, RuntimeError> {
         let base_val = self.eval_expression(base_expr)?;
-        match (&base_val, member.name.as_str()) {
-            (Value::String(s), "length") => {
-                Ok(Value::Int(s.chars().count() as i64))
-            }
-            (Value::List(list), "length") => {
-                Ok(Value::Int(list.len() as i64))
-            }
-            // Add string case conversion methods
-            (Value::String(s), "to_upper") => {
-                // Return a function that will convert to uppercase when called
-                let upper_fn = Function {
-                    name: "to_upper".to_string(),
-                    parameters: vec![],
-                    body: None, // No body for built-in methods
-                    env: Rc::new(RefCell::new(Environment::new())),
-                    is_builtin: true,
-                };
-                // Store the string value in the environment for later access
-                upper_fn.env.borrow_mut().define("__self".to_string(), Value::String(s.clone()));
-                Ok(Value::Function(Box::new(upper_fn)))
-            }
-            (Value::String(s), "to_lower") => {
-                // Return a function that will convert to lowercase when called
-                let lower_fn = Function {
-                    name: "to_lower".to_string(),
-                    parameters: vec![],
-                    body: None, // No body for built-in methods
-                    env: Rc::new(RefCell::new(Environment::new())),
-                    is_builtin: true,
-                };
-                // Store the string value in the environment for later access
-                lower_fn.env.borrow_mut().define("__self".to_string(), Value::String(s.clone()));
-                Ok(Value::Function(Box::new(lower_fn)))
-            }
-            // TODO: Add Struct field access
-            // Check for methods? (e.g., list.append) - This might require binding methods to values
-            _ => Err(RuntimeError::InvalidOperation(format!("Member access for '.{}' not implemented on type {}", member.name, base_val)))
+        let member_name = member.name.as_str();
+
+        match base_val {
+            Value::String(s) => match member_name {
+                "length" => {
+                    // Return the length directly as an Int
+                    Ok(Value::Int(s.chars().count() as i64))
+                }
+                "to_upper" | "to_lower" => {
+                    // Return a closure (Function) that performs the case conversion
+                    let func = Function {
+                        name: member_name.to_string(),
+                        parameters: vec![], // No parameters for these methods
+                        body: None,
+                        env: Rc::new(RefCell::new(Environment::new())), // Env to capture self
+                        is_builtin: true, // Mark as special built-in method
+                    };
+                    // Capture the string value
+                    func.env.borrow_mut().define("__self".to_string(), Value::String(s));
+                    Ok(Value::Function(Box::new(func)))
+                }
+                 _ => Err(RuntimeError::InvalidOperation(format!(
+                    "String has no member or method named '{}'", member_name
+                )))
+            },
+
+            Value::List(list) => match member_name {
+                "length" => {
+                    // Return the length directly as an Int
+                    Ok(Value::Int(list.len() as i64))
+                }
+                "contains" => {
+                    // Return a closure (Function) that checks for containment
+                    let func = Function {
+                        name: "contains".to_string(),
+                        // Expects one argument: the value to search for
+                        parameters: vec![(Identifier { name: "value".to_string() }, None)],
+                        body: None,
+                        env: Rc::new(RefCell::new(Environment::new())), // Env to capture self
+                        is_builtin: true, // Mark as special built-in method
+                    };
+                    // Capture the list value
+                    func.env.borrow_mut().define("__self".to_string(), Value::List(list));
+                    Ok(Value::Function(Box::new(func)))
+                }
+                 _ => Err(RuntimeError::InvalidOperation(format!(
+                    "List has no member or method named '{}'", member_name
+                )))
+            },
+
+            // Added: Struct Instance Field Access
+            Value::StructInstance(instance) => {
+                // Check if the member is a field
+                 let fields_map = instance.fields.borrow();
+                 if let Some(value) = fields_map.get(member_name) {
+                     Ok(value.clone())
+                 } else {
+                     // TODO: Check for methods later
+                     Err(RuntimeError::InvalidOperation(format!(
+                         "Struct '{}' has no field named '{}'",
+                         instance.type_name.name,
+                         member_name
+                     )))
+                 }
+             }
+
+            other_type => Err(RuntimeError::InvalidOperation(format!(
+                "Member access ('.{}') not supported on type {}", member_name, other_type.type_name() // Use a helper method
+            )))
         }
+    }
+
+    // Added: Handles Struct Initialization
+    fn eval_struct_initializer(&mut self, name: &Identifier, fields: &[(Identifier, Expression)]) -> Result<Value, RuntimeError> {
+        // 1. Find the struct definition in the environment
+        let def_val = self.environment.borrow().get(&name.name)
+            .ok_or_else(|| RuntimeError::TypeError(format!("Struct type '{}' not found.", name.name)))?;
+
+        let struct_def = match def_val {
+            Value::StructDefinition(def) => def,
+            _ => return Err(RuntimeError::TypeError(format!("'{}' is not a struct type.", name.name))),
+        };
+
+        // 2. Evaluate provided field values
+        let mut instance_fields = HashMap::new();
+        for (field_ident, field_expr) in fields {
+            let field_value = self.eval_expression(field_expr)?;
+            instance_fields.insert(field_ident.name.clone(), field_value);
+        }
+
+        // 3. Check if all declared fields are present (optional, could allow partial init?)
+        // For now, let's require all fields defined in the struct to be initialized.
+        for defined_field in &struct_def.fields {
+            if !instance_fields.contains_key(&defined_field.name.name) {
+                return Err(RuntimeError::InvalidOperation(format!(
+                    "Missing field '{}' in initializer for struct '{}'",
+                    defined_field.name.name,
+                    name.name
+                )));
+            }
+        }
+        // Optional: Check for extra fields provided in initializer?
+
+        // 4. Create and return the StructInstanceValue
+        Ok(Value::StructInstance(StructInstanceValue {
+            type_name: name.clone(),
+            fields: Rc::new(RefCell::new(instance_fields)),
+        }))
     }
 
     // --- Helper Methods ---
@@ -652,6 +746,9 @@ impl Interpreter {
             Value::String(s) => !s.is_empty(),
             Value::Function(_) => true,
             Value::List(list) => !list.is_empty(),
+            // Struct definitions/instances are considered truthy by default
+            Value::StructDefinition(_) => true,
+            Value::StructInstance(_) => true,
         }
     }
 
@@ -681,8 +778,11 @@ impl Interpreter {
                 // All elements equal
                 Ok(Some(std::cmp::Ordering::Equal))
             }
+            // Structs are not comparable by default
+            (Value::StructDefinition(l), Value::StructDefinition(r)) => Err(RuntimeError::TypeError(format!("Cannot compare struct definitions: {} and {}", l.name.name, r.name.name))),
+            (Value::StructInstance(l), Value::StructInstance(r)) => Err(RuntimeError::TypeError(format!("Cannot compare struct instances of type {}", l.type_name.name))),
             // Incomparable types
-            (l, r) => Err(RuntimeError::TypeError(format!("Cannot compare {} and {}", l, r))),
+            (l, r) => Err(RuntimeError::TypeError(format!("Cannot compare {} and {}", l.type_name(), r.type_name()))),
         }
     }
 
@@ -712,8 +812,32 @@ impl Interpreter {
                 // All elements are equal
                 Ok(true)
             }
+            (Value::StructInstance(l), Value::StructInstance(r)) => {
+                 // Instances are equal if they are the same type and fields are equal
+                 Ok(l.type_name == r.type_name &&
+                 *l.fields.borrow() == *r.fields.borrow())
+             }
+             // Struct definitions are generally not comparable for equality
+             (Value::StructDefinition(_), Value::StructDefinition(_)) => Ok(false),
             // Different types are not equal
             _ => Ok(false),
+        }
+    }
+}
+
+// Add type_name helper method to Value if not already present
+impl Value {
+    fn type_name(&self) -> &'static str {
+        match self {
+            Value::Int(_) => "int",
+            Value::Float(_) => "float",
+            Value::String(_) => "string",
+            Value::Boolean(_) => "boolean",
+            Value::Null => "null",
+            Value::Function(_) => "function",
+            Value::List(_) => "list",
+            Value::StructDefinition(_) => "struct definition",
+            Value::StructInstance(_) => "struct instance",
         }
     }
 } 

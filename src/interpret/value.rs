@@ -1,23 +1,61 @@
-use crate::lexer::astgen::{BlockStatement, Identifier, TypeAnnotation};
+use crate::lexer::astgen::{BlockStatement, Identifier, TypeAnnotation, FieldDefinition};
 use crate::interpret::environment::Environment;
 use std::fmt;
 use std::rc::Rc;
 use std::cell::RefCell;
+use std::collections::HashMap;
 
 // --- Runtime Value Enum ---
 
-#[derive(Debug, Clone, PartialEq)] // Should maybe not derive PartialEq for floats later
+#[derive(Debug, Clone)] // Removed PartialEq - complex for functions/structs
 pub enum Value {
     Int(i64),
-    Float(f64), // Use f64 for floats
+    Float(f64),
     String(String),
     Boolean(bool),
     Null,
-    // Add Function value type
     Function(Box<Function>),
-    // Add List/Array value type
     List(Vec<Value>),
-    // TODO: Add StructInstance, Dict etc. later
+    StructDefinition(StructDefinitionValue),
+    StructInstance(StructInstanceValue),
+}
+
+// Represents a struct definition captured at runtime
+#[derive(Debug, Clone)]
+pub struct StructDefinitionValue {
+    pub name: Identifier,
+    pub fields: Vec<FieldDefinition>,
+    // Add methods later
+}
+
+// Represents an instance of a struct
+#[derive(Debug, Clone)]
+pub struct StructInstanceValue {
+    pub type_name: Identifier, // The name of the struct type
+    pub fields: Rc<RefCell<HashMap<String, Value>>>, // Field names map to values
+}
+
+// Custom PartialEq for Value (needed because we removed derive)
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Value::Int(l), Value::Int(r)) => l == r,
+            (Value::Float(l), Value::Float(r)) => l == r,
+            (Value::String(l), Value::String(r)) => l == r,
+            (Value::Boolean(l), Value::Boolean(r)) => l == r,
+            (Value::Null, Value::Null) => true,
+            (Value::List(l), Value::List(r)) => l == r, // Relies on PartialEq for Vec<Value>
+            (Value::Function(l), Value::Function(r)) => l == r, // Uses Function's PartialEq
+            (Value::StructInstance(l), Value::StructInstance(r)) => {
+                 // Instances are equal if they are the same type and fields are equal
+                 l.type_name == r.type_name &&
+                 *l.fields.borrow() == *r.fields.borrow()
+             }
+             // Struct definitions are generally not comparable for equality in this way
+             (Value::StructDefinition(_), Value::StructDefinition(_)) => false,
+            _ => false, // Different types are not equal
+        }
+    }
 }
 
 // Represents a function (user-defined or built-in)
@@ -53,12 +91,23 @@ impl fmt::Display for Value {
             Value::List(items) => {
                 write!(f, "[")?;
                 for (i, item) in items.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
+                    if i > 0 { write!(f, ", ")?; }
                     write!(f, "{}", item)?;
                 }
                 write!(f, "]")
+            },
+            Value::StructDefinition(def) => write!(f, "<struct {}>", def.name.name),
+            Value::StructInstance(inst) => {
+                // Basic display for struct instance
+                 write!(f, "{} {{ ", inst.type_name.name)?;
+                 let fields = inst.fields.borrow();
+                 let mut first = true;
+                 for (name, value) in fields.iter() {
+                     if !first { write!(f, ", ")?; }
+                     write!(f, "{}: {}", name, value)?;
+                     first = false;
+                 }
+                 write!(f, " }}")
             },
         }
     }

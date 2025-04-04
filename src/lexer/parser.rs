@@ -570,9 +570,22 @@ impl<'a> Parser<'a> {
             Some(Token::Keyword(Keyword::False)) => { self.next_token(); Ok(Expression::Literal(Literal::Boolean(false))) }
             Some(Token::Keyword(Keyword::Null)) => { self.next_token(); Ok(Expression::Literal(Literal::Null)) }
             Some(Token::Ident(_)) => {
-                 if let Some(Token::Ident(s)) = self.next_token() { // Consume
-                    Ok(Expression::Identifier(Identifier { name: s }))
-                 } else { unreachable!("Token mismatch after peek") }
+                // Check if it's an identifier followed by { (struct initializer)
+                let ident_token = self.next_token().unwrap(); // Consume Ident
+                if self.check_peek(&Token::Punctuation(Punctuation::LeftBrace)) {
+                    // It's a struct initializer
+                     let name = match ident_token {
+                        Token::Ident(s) => Identifier { name: s },
+                        _ => unreachable!("Checked for Ident already"),
+                    };
+                    Ok(self.parse_struct_initializer(name)?) // Wrap in Ok
+                } else {
+                    // It's a regular identifier variable
+                     match ident_token {
+                        Token::Ident(s) => Ok(Expression::Identifier(Identifier { name: s })),
+                        _ => unreachable!("Checked for Ident already"),
+                    }
+                }
             }
             Some(Token::Punctuation(Punctuation::LeftParen)) => {
                 self.next_token(); // Consume '('
@@ -762,6 +775,33 @@ impl<'a> Parser<'a> {
           consume_token!(self, Token::Punctuation(Punctuation::RightBrace), "Expected '}' after dict items")?;
           Ok(Expression::DictInitializer { pairs })
       }
+
+    // --- Helper for Struct Initializer --- Added
+    fn parse_struct_initializer(&mut self, name: Identifier) -> Result<Expression, ParseError> {
+        consume_token!(self, Token::Punctuation(Punctuation::LeftBrace), "Expected '{' after struct name for initializer")?;
+        let mut fields = Vec::new();
+
+        // Parse field initializers until '}'
+        if !self.check_peek(&Token::Punctuation(Punctuation::RightBrace)) {
+            loop {
+                let field_name = self.parse_identifier()?;
+                consume_token!(self, Token::Punctuation(Punctuation::Colon), "Expected ':' after field name in struct initializer")?;
+                let field_value = self.parse_expression(Precedence::Lowest)?;
+                fields.push((field_name, field_value));
+
+                if !consume_optional_token!(self, Token::Punctuation(Punctuation::Comma)) {
+                    break; // No comma, expect '}'
+                }
+                if self.check_peek(&Token::Punctuation(Punctuation::RightBrace)) {
+                     // Allow trailing comma
+                    break;
+                }
+            }
+        }
+
+        consume_token!(self, Token::Punctuation(Punctuation::RightBrace), "Expected '}' to end struct initializer")?;
+        Ok(Expression::StructInitializer { name, fields })
+    }
 
 }
 

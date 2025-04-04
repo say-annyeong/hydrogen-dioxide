@@ -9,13 +9,13 @@ pub mod structdef; // Added structdef module
 pub use expression::Expression;
 pub use import::{ImportDeclaration, ImportSource};
 pub use literal::Literal;
-pub use statement::{BlockStatement, IfAlternative, Statement, ExportDeclaration}; // Add ExportDeclaration
-pub use structdef::{FieldDefinition, MethodDefinition, StructDefinition}; // Added struct exports
+pub use statement::{BlockStatement, IfAlternative, Statement, ExportDeclaration};
+pub use structdef::{FieldDefinition, MethodDefinition, StructDefinition};
 
 // --- Shared Basic Types ---
 
 /// Represents an identifier (e.g., variable name, function name).
-#[derive(Debug, PartialEq, Eq, Clone, Hash)] // Added Eq, Hash for potential use in maps
+#[derive(Debug, PartialEq, Eq, Clone, Hash)]
 pub struct Identifier {
     pub name: String,
     // Potentially add span/location info here later
@@ -33,34 +33,18 @@ pub enum TypeAnnotation {
     Void, // Explicit void type for function returns
 }
 
-// --- Operator Enums (used in Expression) ---
+// --- Operator Enums --- Moved here from expression.rs
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)] // Added Eq, Hash, Copy
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub enum BinaryOperator {
-    // Arithmetic
-    Add, // +
-    Subtract, // -
-    Multiply, // *
-    Divide, // /
-    Modulo, // %
-
-    // Comparison
-    Equal, // ==
-    NotEqual, // !=
-    LessThan, // <
-    GreaterThan, // >
-    LessEqual, // <=
-    GreaterEqual, // >=
-
-    // Logical
-    And, // &&
-    Or, // ||
+    Add, Subtract, Multiply, Divide, Modulo,
+    Equal, NotEqual, LessThan, GreaterThan, LessEqual, GreaterEqual,
+    And, Or,
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)] // Added Eq, Hash, Copy
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub enum UnaryOperator {
-    Not,   // !
-    Negate, // -
+    Not, Negate,
 }
 
 /// Represents the top-level structure of an Oxygen program (a list of statements).
