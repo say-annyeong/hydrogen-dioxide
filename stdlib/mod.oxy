@@ -1,0 +1,7 @@
+// stdlib/mod.oxy
+// This file is present but lib.oxy is preferred as the entry point for the stdlib root.
+ 
+export module cmp;
+export module num;
+export module string;
+export module list; 

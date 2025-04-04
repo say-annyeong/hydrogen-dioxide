@@ -1,0 +1,15 @@
+// stdlib/list/ops.oxy
+
+// Operations on lists
+
+// Checks if a list contains a specific value
+fn contains(list, value) {
+    let i = 0;
+    while (i < list.length) {
+        if (list[i] == value) {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+} 

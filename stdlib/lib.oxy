@@ -1,0 +1,13 @@
+// stdlib/lib.oxy
+
+// --- Oxygen Standard Library ---
+// This file serves as the conceptual root of the standard library.
+// Actual functions are organized into submodules inspired by Rust's std.
+
+// Export the submodules
+export cmp;
+export num;
+export string;
+export list;
+
+// See individual module files (e.g., cmp/ord.oxy, num/abs.oxy) for implementations. 

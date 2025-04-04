@@ -1,0 +1,12 @@
+// stdlib/num/abs.oxy
+
+// Numeric absolute value function
+
+// Returns the absolute value of a number (int or float)
+fn abs(n) {
+    if (n < 0) {
+        return -n;
+    } else {
+        return n;
+    }
+} 
