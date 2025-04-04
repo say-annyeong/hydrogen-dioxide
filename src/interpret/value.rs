@@ -15,7 +15,9 @@ pub enum Value {
     Null,
     // Add Function value type
     Function(Box<Function>),
-    // TODO: Add StructInstance, List, Dict etc. later
+    // Add List/Array value type
+    List(Vec<Value>),
+    // TODO: Add StructInstance, Dict etc. later
 }
 
 // Represents a function (user-defined or built-in)
@@ -48,6 +50,16 @@ impl fmt::Display for Value {
             Value::Boolean(b) => write!(f, "{}", b),
             Value::Null => write!(f, "null"),
             Value::Function(func) => write!(f, "<function {}>", func.name),
+            Value::List(items) => {
+                write!(f, "[")?;
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", item)?;
+                }
+                write!(f, "]")
+            },
         }
     }
 } 
