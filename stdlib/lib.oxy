@@ -7,7 +7,8 @@
 // Export the submodules containing Oxygen functions
 export cmp;
 export num;
-// export string; // String methods handled internally for now
-// export list;   // List methods handled internally for now
+export path;
+export string;
+export list;
 
 // See individual module files (e.g., cmp/ord.oxy, num/abs.oxy) for implementations. 

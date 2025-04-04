@@ -4,7 +4,7 @@
 use super::astgen::{
     BinaryOperator, BlockStatement, Expression, FieldDefinition, Identifier, IfAlternative,
     ImportDeclaration, ImportSource, Literal, MethodDefinition, Program, Statement, StructDefinition,
-    TypeAnnotation, UnaryOperator, ExportDeclaration, /* other AST nodes */
+    TypeAnnotation, UnaryOperator, ExportDeclaration, ImplMethodDefinition, /* other AST nodes */
 };
 use super::token::{Assignment, Keyword, Operator, Punctuation, Special, Token, Position};
 use super::tokenizer::Tokenizer;
@@ -204,6 +204,7 @@ impl<'a> Parser<'a> {
             }
             Some(Token::Keyword(Keyword::Break)) => self.parse_break_statement(),
             Some(Token::Keyword(Keyword::Export)) => self.parse_export_statement(),
+            Some(Token::Keyword(Keyword::Impl)) => self.parse_impl_block(),
             Some(Token::Punctuation(Punctuation::LeftBrace)) => {
                 // Allow standalone block? Let's disallow for now.
                 Err(ParseError::UnexpectedToken(format!("{:?}", self.peek_token().unwrap()), "Expected statement start keyword or expression".to_string(), self.last_pos))
@@ -801,6 +802,62 @@ impl<'a> Parser<'a> {
 
         consume_token!(self, Token::Punctuation(Punctuation::RightBrace), "Expected '}' to end struct initializer")?;
         Ok(Expression::StructInitializer { name, fields })
+    }
+
+    // --- New Parser for Impl Blocks ---
+    fn parse_impl_block(&mut self) -> Result<Statement, ParseError> {
+        self.next_token(); // Consume 'impl'
+        let struct_name = self.parse_identifier()?;
+        consume_token!(self, Token::Punctuation(Punctuation::LeftBrace), "Expected '{' after impl <StructName>")?;
+
+        let mut methods = Vec::new();
+        while !self.check_peek(&Token::Punctuation(Punctuation::RightBrace)) && self.peek_token().is_some() {
+            // Expect function definitions within the impl block
+            if self.check_peek(&Token::Keyword(Keyword::Fn)) {
+                 methods.push(self.parse_impl_method_definition()?);
+            } else {
+                return Err(ParseError::UnexpectedToken(
+                    format!("{:?}", self.peek_token()),
+                    "Expected 'fn' for method definition inside impl block".to_string(),
+                    self.last_pos
+                ));
+            }
+        }
+
+        consume_token!(self, Token::Punctuation(Punctuation::RightBrace), "Expected '}' to end impl block")?;
+
+        Ok(Statement::ImplBlock {
+            struct_name,
+            methods,
+        })
+    }
+
+    // --- New Helper for Parsing Method Definition inside Impl ---
+    // Very similar to parse_fn_declaration, but returns ImplMethodDefinition
+    fn parse_impl_method_definition(&mut self) -> Result<ImplMethodDefinition, ParseError> {
+        self.next_token(); // Consume 'fn'
+        let name = self.parse_identifier()?;
+
+        consume_token!(self, Token::Punctuation(Punctuation::LeftParen), "Expected '(' after method name")?;
+
+        // Parse parameters - check for 'self' as the first parameter
+        let parameters = self.parse_parameter_list()?;
+        // TODO: Add validation later to ensure 'self' (if present) is the first parameter
+        // and potentially handle different self types (&self, &mut self)?
+
+        let mut return_type = None;
+        if consume_optional_token!(self, Token::Punctuation(Punctuation::Arrow)) {
+            return_type = Some(self.parse_type_annotation()?);
+        }
+
+        let body = self.parse_block_statement()?;
+
+        Ok(ImplMethodDefinition {
+            name,
+            parameters,
+            return_type,
+            body,
+        })
     }
 
 }

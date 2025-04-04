@@ -47,6 +47,16 @@ pub enum UnaryOperator {
     Not, Negate,
 }
 
+// --- New Enum for Method Definitions (inside ImplBlock) ---
+// Slightly different from function declaration as it belongs to an impl block
+#[derive(Debug, PartialEq, Clone)]
+pub struct ImplMethodDefinition {
+    pub name: Identifier,
+    pub parameters: Vec<(Identifier, Option<TypeAnnotation>)>, // Includes 'self' if present
+    pub return_type: Option<TypeAnnotation>,
+    pub body: BlockStatement,
+}
+
 /// Represents the top-level structure of an Oxygen program (a list of statements).
 #[derive(Debug, PartialEq, Clone)]
 pub struct Program {

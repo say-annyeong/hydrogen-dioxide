@@ -1,4 +1,4 @@
-use crate::lexer::astgen::{BlockStatement, Identifier, TypeAnnotation, FieldDefinition};
+use crate::lexer::astgen::{BlockStatement, Identifier, TypeAnnotation, FieldDefinition, ImplMethodDefinition};
 use crate::interpret::environment::Environment;
 use std::fmt;
 use std::rc::Rc;
@@ -18,6 +18,7 @@ pub enum Value {
     List(Vec<Value>),
     StructDefinition(StructDefinitionValue),
     StructInstance(StructInstanceValue),
+    BoundMethod(BoundMethodValue),
 }
 
 // Represents a struct definition captured at runtime
@@ -25,7 +26,7 @@ pub enum Value {
 pub struct StructDefinitionValue {
     pub name: Identifier,
     pub fields: Vec<FieldDefinition>,
-    // Add methods later
+    pub methods: Rc<RefCell<HashMap<String, ImplMethodDefinition>>>,
 }
 
 // Represents an instance of a struct
@@ -33,6 +34,19 @@ pub struct StructDefinitionValue {
 pub struct StructInstanceValue {
     pub type_name: Identifier, // The name of the struct type
     pub fields: Rc<RefCell<HashMap<String, Value>>>, // Field names map to values
+}
+
+impl PartialEq for StructInstanceValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.type_name == other.type_name && *self.fields.borrow() == *other.fields.borrow()
+    }
+}
+
+// Represents a method bound to a specific instance
+#[derive(Debug, Clone)]
+pub struct BoundMethodValue {
+    pub instance: StructInstanceValue, // Rc? No, clone the instance for now?
+    pub method: ImplMethodDefinition,
 }
 
 // Custom PartialEq for Value (needed because we removed derive)
@@ -51,8 +65,9 @@ impl PartialEq for Value {
                  l.type_name == r.type_name &&
                  *l.fields.borrow() == *r.fields.borrow()
              }
-             // Struct definitions are generally not comparable for equality in this way
-             (Value::StructDefinition(_), Value::StructDefinition(_)) => false,
+            (Value::BoundMethod(l), Value::BoundMethod(r)) => std::ptr::eq(&l.method, &r.method) && l.instance == r.instance,
+            // Struct definitions are generally not comparable for equality in this way
+            (Value::StructDefinition(_), Value::StructDefinition(_)) => false,
             _ => false, // Different types are not equal
         }
     }
@@ -109,6 +124,7 @@ impl fmt::Display for Value {
                  }
                  write!(f, " }}")
             },
+            Value::BoundMethod(bm) => write!(f, "<bound method {}.{}>", bm.instance.type_name.name, bm.method.name.name),
         }
     }
 } 

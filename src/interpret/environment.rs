@@ -53,4 +53,18 @@ impl Environment {
             }
         }
     }
+
+    // Added for debugging
+    pub fn debug_print(&self, indent: &str) {
+        println!("{}Environment {{level}}", indent);
+        for (name, value) in &self.store {
+            println!("{}{} -> {}", indent, name, value); // Use Value's Display
+        }
+        if let Some(outer_env) = &self.outer {
+            println!("{}Outer ->", indent);
+            outer_env.borrow().debug_print(&(indent.to_string() + "  "));
+        } else {
+            println!("{}Outer -> None", indent);
+        }
+    }
 } 

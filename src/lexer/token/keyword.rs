@@ -20,6 +20,7 @@ pub enum Keyword {
     Null,
     Break,
     Export,
+    Impl,
     // Add other keywords if necessary
 }
 
@@ -43,6 +44,7 @@ impl Display for Keyword {
             Keyword::Null => "null",
             Keyword::Break => "break",
             Keyword::Export => "export",
+            Keyword::Impl => "impl",
         };
         write!(f, "{}", keyword_str)
     }
@@ -68,6 +70,7 @@ pub fn lookup_keyword(s: &str) -> Option<Keyword> {
         "null" => Some(Keyword::Null),
         "break" => Some(Keyword::Break),
         "export" => Some(Keyword::Export),
+        "impl" => Some(Keyword::Impl),
         _ => None,
     }
 }

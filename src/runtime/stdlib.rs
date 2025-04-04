@@ -57,6 +57,7 @@ pub fn builtin_type(args: Vec<Value>) -> Result<Value, RuntimeError> {
         Value::List(_) => "list",
         Value::StructDefinition(def) => def.name.name.as_str(),
         Value::StructInstance(inst) => inst.type_name.name.as_str(),
+        Value::BoundMethod(_) => "bound method",
     };
 
     Ok(Value::String(type_str.to_string()))

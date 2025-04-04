@@ -3,7 +3,7 @@ use crate::lexer::astgen::{
     IfAlternative, ImportDeclaration, ImportSource, ExportDeclaration // Ensure IfAlternative, ImportDeclaration, and ImportSource are imported if used
 };
 use crate::runtime; // Import the runtime module (for stdlib)
-use crate::interpret::value::{Value, Function, StructDefinitionValue, StructInstanceValue};
+use crate::interpret::value::{Value, Function, StructDefinitionValue, StructInstanceValue, BoundMethodValue};
 use crate::interpret::environment::Environment;
 use crate::interpret::error::RuntimeError;
 
@@ -37,6 +37,11 @@ impl Interpreter {
              eprintln!("!!! Fatal Error: Failed to load standard library: {} !!!", e);
              // Consider exiting or returning an error from new()
         }
+
+        // DEBUG: Print contents of stdlib env after loading
+        // println!("--- Stdlib Environment Contents After Loading ---");
+        // stdlib_env.borrow().debug_print("");
+        // println!("-----------------------------------------------");
 
         // 4. Create the main global environment for user code
         let global_env = Rc::new(RefCell::new(Environment::new()));
@@ -260,10 +265,27 @@ impl Interpreter {
                 let def_value = StructDefinitionValue {
                     name: struct_def.name.clone(),
                     fields: struct_def.fields.clone(),
-                    // methods added later
+                    methods: Rc::new(RefCell::new(HashMap::new())), // Initialize empty methods map
                 };
                 self.environment.borrow_mut().define(struct_def.name.name.clone(), Value::StructDefinition(def_value));
                 Ok(())
+            },
+            Statement::ImplBlock { struct_name, methods } => {
+                // Find the struct definition
+                let def_val = self.environment.borrow().get(&struct_name.name)
+                    .ok_or_else(|| RuntimeError::TypeError(format!("Cannot impl for undefined struct '{}'.", struct_name.name)))?;
+
+                match def_val {
+                    Value::StructDefinition(struct_def_value) => {
+                        // Add methods to the definition's map
+                        let mut methods_map = struct_def_value.methods.borrow_mut();
+                        for method_def in methods {
+                            methods_map.insert(method_def.name.name.clone(), method_def.clone());
+                        }
+                        Ok(())
+                    }
+                    _ => Err(RuntimeError::TypeError(format!("Cannot impl for non-struct type '{}'.", struct_name.name))),
+                }
             },
             Statement::ImportStatement(decl) => self.eval_import_statement(decl),
             Statement::ExportStatement(_) => {
@@ -475,10 +497,7 @@ impl Interpreter {
     }
 
     fn eval_function_call(&mut self, callee: &Expression, arguments: &[Expression]) -> Result<Value, RuntimeError> {
-        // Evaluate the callee expression first
         let callee_val = self.eval_expression(callee)?;
-
-        // Evaluate arguments
         let mut arg_values = Vec::with_capacity(arguments.len());
         for arg_expr in arguments {
             arg_values.push(self.eval_expression(arg_expr)?);
@@ -527,7 +546,10 @@ impl Interpreter {
                     self.call_user_function(*func, arg_values)
                 }
             }
-            // Remove previous special case for toString - should be handled by member access now
+            Value::BoundMethod(bound_method) => {
+                // Calling a method like instance.method()
+                self.call_struct_method(bound_method, arg_values)
+            }
             _ => Err(RuntimeError::TypeError(format!("Cannot call non-function value: {}", callee_val))),
         }
     }
@@ -677,22 +699,46 @@ impl Interpreter {
 
             // Added: Struct Instance Field Access
             Value::StructInstance(instance) => {
-                // Check if the member is a field
-                 let fields_map = instance.fields.borrow();
-                 if let Some(value) = fields_map.get(member_name) {
-                     Ok(value.clone())
-                 } else {
-                     // TODO: Check for methods later
-                     Err(RuntimeError::InvalidOperation(format!(
-                         "Struct '{}' has no field named '{}'",
-                         instance.type_name.name,
-                         member_name
-                     )))
-                 }
-             }
+                // 1. Check for fields first
+                let fields_map = instance.fields.borrow();
+                if let Some(value) = fields_map.get(member_name) {
+                    return Ok(value.clone());
+                }
+
+                // 2. If not a field, check for methods on the struct definition
+                // Need to find the struct definition again (or store Rc<StructDef> in instance?)
+                let def_val = self.environment.borrow().get(&instance.type_name.name)
+                   .or_else(|| self.stdlib_environment.borrow().get(&instance.type_name.name))
+                   .ok_or_else(|| RuntimeError::TypeError(format!(
+                       "Internal error: Struct definition '{}' not found for instance.", instance.type_name.name
+                   )))?;
+
+                if let Value::StructDefinition(struct_def) = def_val {
+                    let methods_map = struct_def.methods.borrow();
+                    if let Some(method_def) = methods_map.get(member_name) {
+                        // Return a BoundMethod value, capturing the instance and method def
+                        Ok(Value::BoundMethod(BoundMethodValue {
+                            instance: instance.clone(), // Clone the instance info
+                            method: method_def.clone(), // Clone the method definition
+                        }))
+                    } else {
+                        Err(RuntimeError::InvalidOperation(format!(
+                            "Struct '{}' has no field or method named '{}'",
+                            instance.type_name.name,
+                            member_name
+                        )))
+                    }
+                } else {
+                     Err(RuntimeError::TypeError(format!(
+                        "Internal error: Expected struct definition for type '{}', found {}.",
+                        instance.type_name.name,
+                        def_val.type_name()
+                    )))
+                }
+            }
 
             other_type => Err(RuntimeError::InvalidOperation(format!(
-                "Member access ('.{}') not supported on type {}", member_name, other_type.type_name() // Use a helper method
+                "Member access ('.{}') not supported on type {}", member_name, other_type.type_name()
             )))
         }
     }
@@ -735,6 +781,44 @@ impl Interpreter {
         }))
     }
 
+    // --- New function to handle calling struct methods ---
+    fn call_struct_method(&mut self, bound_method: BoundMethodValue, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let method = bound_method.method;
+        let instance = bound_method.instance;
+
+        // Parameter count check (excluding self)
+        let non_self_params: Vec<_> = method.parameters.iter().filter(|(p, _)| p.name != "self").collect();
+        if args.len() != non_self_params.len() {
+             return Err(RuntimeError::TypeError(format!(
+                 "Method '{}.{}' expected {} arguments (excluding self) but got {}",
+                 instance.type_name.name, method.name.name, non_self_params.len(), args.len()
+             )));
+        }
+
+        // Create method execution environment, enclosing the definition environment (likely global/stdlib for now)
+        // TODO: Does the method capture the struct definition env? Or just global?
+        // Let's assume global/stdlib for now via stdlib_environment
+        let method_env = Rc::new(RefCell::new(Environment::new_with_outer(Rc::clone(&self.stdlib_environment))));
+
+        // Define 'self' in the method environment
+        method_env.borrow_mut().define("self".to_string(), Value::StructInstance(instance));
+
+        // Define other arguments
+        let mut arg_idx = 0;
+        for (param_ident, _) in &method.parameters {
+            if param_ident.name == "self" { continue; } // Skip self
+            method_env.borrow_mut().define(param_ident.name.clone(), args[arg_idx].clone());
+            arg_idx += 1;
+        }
+
+        // Execute method body in the method environment
+        let previous_env = std::mem::replace(&mut self.environment, method_env);
+        let result = self.execute_function_body(&method.body);
+        self.environment = previous_env; // Restore environment
+
+        result // Return value or propagate error (like Return)
+    }
+
     // --- Helper Methods ---
 
     fn is_truthy(&self, value: Value) -> bool {
@@ -749,6 +833,7 @@ impl Interpreter {
             // Struct definitions/instances are considered truthy by default
             Value::StructDefinition(_) => true,
             Value::StructInstance(_) => true,
+            Value::BoundMethod(_) => true, // Bound methods are truthy
         }
     }
 
@@ -781,6 +866,8 @@ impl Interpreter {
             // Structs are not comparable by default
             (Value::StructDefinition(l), Value::StructDefinition(r)) => Err(RuntimeError::TypeError(format!("Cannot compare struct definitions: {} and {}", l.name.name, r.name.name))),
             (Value::StructInstance(l), Value::StructInstance(r)) => Err(RuntimeError::TypeError(format!("Cannot compare struct instances of type {}", l.type_name.name))),
+            // Bound methods are not comparable
+            (Value::BoundMethod(_), _) | (_, Value::BoundMethod(_)) => Err(RuntimeError::TypeError("Cannot compare bound methods".to_string())),
             // Incomparable types
             (l, r) => Err(RuntimeError::TypeError(format!("Cannot compare {} and {}", l.type_name(), r.type_name()))),
         }
@@ -819,6 +906,12 @@ impl Interpreter {
              }
              // Struct definitions are generally not comparable for equality
              (Value::StructDefinition(_), Value::StructDefinition(_)) => Ok(false),
+            // Bound methods are not equal unless identical object + method
+            (Value::BoundMethod(l), Value::BoundMethod(r)) => {
+                // Using ptr equality for method definition comparison
+                // Instance comparison uses the PartialEq impl for StructInstanceValue
+                 Ok(std::ptr::eq(&l.method, &r.method) && l.instance == r.instance)
+            },
             // Different types are not equal
             _ => Ok(false),
         }
@@ -838,6 +931,7 @@ impl Value {
             Value::List(_) => "list",
             Value::StructDefinition(_) => "struct definition",
             Value::StructInstance(_) => "struct instance",
+            Value::BoundMethod(_) => "bound method",
         }
     }
 } 

@@ -1,7 +1,8 @@
 use super::expression::Expression;
 use super::{
     Identifier, // Defined in mod.rs
-    TypeAnnotation // Defined in mod.rs
+    TypeAnnotation, // Defined in mod.rs
+    ImplMethodDefinition // Added ImplMethodDefinition
 };
 use super::import::ImportDeclaration;
 use super::structdef::StructDefinition;
@@ -42,6 +43,10 @@ pub enum Statement {
     // Add break statement support
     BreakStatement,
     ExportStatement(ExportDeclaration),
+    ImplBlock { // Added
+        struct_name: Identifier,
+        methods: Vec<ImplMethodDefinition>,
+    },
     // EmptyStatement // Optional, if needed for things like `;;` 
 }
 
