@@ -4,10 +4,10 @@
 // This file serves as the conceptual root of the standard library.
 // Actual functions are organized into submodules inspired by Rust's std.
 
-// Export the submodules
+// Export the submodules containing Oxygen functions
 export cmp;
 export num;
-export string;
-export list;
+// export string; // String methods handled internally for now
+// export list;   // List methods handled internally for now
 
 // See individual module files (e.g., cmp/ord.oxy, num/abs.oxy) for implementations. 

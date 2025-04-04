@@ -3,4 +3,5 @@
 export ops;
 
 // Exports from this module:
-// - ops (contains) 
+// (Currently uses built-in methods like .length)
+// Future: could add functions like sort, find, etc. 
