@@ -1,6 +1,6 @@
 use crate::lexer::astgen::{
     BinaryOperator, BlockStatement, Expression, Identifier, Literal, Program, Statement, UnaryOperator,
-    IfAlternative, ImportDeclaration, ImportSource // Ensure IfAlternative, ImportDeclaration, and ImportSource are imported if used
+    IfAlternative, ImportDeclaration, ImportSource, ExportDeclaration // Ensure IfAlternative, ImportDeclaration, and ImportSource are imported if used
 };
 use crate::runtime; // Import the runtime module (for stdlib)
 use crate::interpret::value::{Value, Function};
@@ -11,6 +11,7 @@ use std::rc::Rc;
 use std::cell::RefCell;
 use std::fs; // Import fs for file reading
 use crate::lexer::{Tokenizer, Parser}; // Import Tokenizer and Parser
+use std::path::{Path, PathBuf}; // Import Path and PathBuf
 
 // --- Interpreter ---
 
@@ -29,44 +30,14 @@ impl Interpreter {
         // 2. Populate stdlib_env with Rust built-ins
         runtime::stdlib::register_stdlib(&mut stdlib_env.borrow_mut());
 
-        // 3. Load and execute Oxygen stdlib code (.oxy files) into stdlib_env
-        let stdlib_files = vec!["stdlib/core.oxy"]; // Add more files here later
-        for stdlib_path in stdlib_files {
-            match fs::read_to_string(stdlib_path) {
-                Ok(stdlib_code) => {
-                    let tokenizer = Tokenizer::new(&stdlib_code);
-                    let mut parser = Parser::new(tokenizer);
-                    let program = parser.parse_program();
-
-                    if !parser.errors().is_empty() {
-                        eprintln!("!!! Fatal Error: Failed to parse Oxygen standard library file '{}' !!!", stdlib_path);
-                        parser.errors().iter().for_each(|e| eprintln!("- {:?}", e));
-                        // std::process::exit(1);
-                    } else {
-                        // Create a temporary interpreter instance with stdlib_env to execute stdlib code
-                        let mut temp_interpreter = Interpreter {
-                            environment: Rc::clone(&stdlib_env), // Use stdlib_env for execution
-                            stdlib_environment: Rc::clone(&stdlib_env), // Point to itself (not strictly needed for init)
-                        };
-                        match temp_interpreter.interpret_program_in_place(program) {
-                            Ok(_) => { /* Stdlib file loaded */ }
-                            Err(errors) => {
-                                eprintln!("!!! Fatal Error: Runtime errors during Oxygen standard library initialization '{}' !!!", stdlib_path);
-                                errors.iter().for_each(|e| eprintln!("- {}", e));
-                                // std::process::exit(1);
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!("!!! Fatal Error: Could not read Oxygen standard library file '{}': {} !!!", stdlib_path, e);
-                    // std::process::exit(1);
-                }
-            }
+        // 3. Dynamically load and execute Oxygen stdlib code (.oxy files) into stdlib_env
+        let stdlib_root = PathBuf::from("stdlib");
+        if let Err(e) = Self::load_oxygen_module(&stdlib_root, Rc::clone(&stdlib_env)) {
+             eprintln!("!!! Fatal Error: Failed to load standard library: {} !!!", e);
+             // Consider exiting or returning an error from new()
         }
 
-        // 4. Create the main global environment for user code, enclosing the stdlib environment
-        //    (Or keep them separate and handle lookups? Let's keep separate for now)
+        // 4. Create the main global environment for user code
         let global_env = Rc::new(RefCell::new(Environment::new()));
 
         // 5. Return the final interpreter instance
@@ -74,6 +45,110 @@ impl Interpreter {
             environment: global_env,
             stdlib_environment: stdlib_env,
         }
+    }
+
+    // --- New Function: Recursively Loads Oxygen Modules ---
+    fn load_oxygen_module(dir_path: &Path, target_env: Rc<RefCell<Environment>>) -> Result<(), String> {
+        // Determine whether to use lib.oxy or mod.oxy
+        let is_stdlib_root = dir_path == Path::new("stdlib");
+        let entry_point_path = if is_stdlib_root {
+            let lib_path = dir_path.join("lib.oxy");
+            if lib_path.exists() { lib_path } else { dir_path.join("mod.oxy") }
+        } else {
+            dir_path.join("mod.oxy")
+        };
+
+        if !entry_point_path.exists() {
+            return Ok(()); // Silently skip if entry point doesn't exist
+        }
+
+        let entry_code = fs::read_to_string(&entry_point_path)
+            .map_err(|e| format!("Failed to read {}: {}", entry_point_path.display(), e))?;
+
+        let tokenizer = Tokenizer::new(&entry_code);
+        let mut parser = Parser::new(tokenizer);
+        let program = parser.parse_program();
+
+        if !parser.errors().is_empty() {
+             let error_details = parser.errors().iter()
+                 .map(|e| format!("- {:?}", e))
+                 .collect::<Vec<_>>().join("\n");
+             return Err(format!("Parse errors in {}:\n{}", entry_point_path.display(), error_details));
+        }
+
+        // Evaluate the statements in the entry file (lib.oxy or mod.oxy)
+        let mut temp_interpreter = Interpreter {
+            environment: Rc::clone(&target_env),
+            stdlib_environment: Rc::clone(&target_env),
+        };
+
+        for statement in program.statements {
+            match statement {
+                Statement::ExportStatement(decl) => {
+                    match decl {
+                        ExportDeclaration::Identifier(ident) => {
+                            let name = &ident.name;
+                            let potential_dir_path = dir_path.join(name);
+                            let mut potential_file_path = dir_path.join(name);
+                            potential_file_path.set_extension("oxy");
+
+                            if potential_dir_path.is_dir() {
+                                // It's a subdirectory, load its entry point (mod.oxy)
+                                Self::load_oxygen_module(&potential_dir_path, Rc::clone(&target_env))?;
+                            } else if potential_file_path.exists() {
+                                // It's a sibling file, load and execute it.
+                                let file_code = fs::read_to_string(&potential_file_path)
+                                    .map_err(|e| format!("Failed to read {}: {}", potential_file_path.display(), e))?;
+
+                                let file_tokenizer = Tokenizer::new(&file_code);
+                                let mut file_parser = Parser::new(file_tokenizer);
+                                let file_program = file_parser.parse_program();
+
+                                if !file_parser.errors().is_empty() {
+                                    let error_details = file_parser.errors().iter()
+                                        .map(|e| format!("- {:?}", e))
+                                        .collect::<Vec<_>>().join("\n");
+                                    return Err(format!("Parse errors in {}:\n{}", potential_file_path.display(), error_details));
+                                }
+
+                                // Evaluate the file's program using the *same* temporary interpreter
+                                match temp_interpreter.interpret_program_in_place(file_program) {
+                                    Ok(_) => { /* File loaded successfully */ }
+                                    Err(errors) => {
+                                        let error_details = errors.iter()
+                                            .map(|e| format!("- {}", e))
+                                            .collect::<Vec<_>>().join("\n");
+                                        return Err(format!("Runtime errors in {}:\n{}", potential_file_path.display(), error_details));
+                                    }
+                                }
+                            } else {
+                                return Err(format!(
+                                    "Export target '{}' in {} corresponds to neither a directory nor an .oxy file (checked {} and {})",
+                                    name,
+                                    entry_point_path.display(),
+                                    potential_dir_path.display(),
+                                    potential_file_path.display()
+                                ));
+                            }
+                        }
+                        // Removed Module case
+                    }
+                }
+                // Evaluate non-export statements directly
+                _ => {
+                     match temp_interpreter.eval_statement(&statement) {
+                         Ok(_) => { /* Statement evaluated successfully */ }
+                         Err(RuntimeError::Return(_)) => {
+                            return Err(format!("Runtime error in {}: Top-level return not allowed.", entry_point_path.display()));
+                         }
+                         Err(e) => {
+                            return Err(format!("Runtime error in {}: {}", entry_point_path.display(), e));
+                         }
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     // Helper function to interpret a Program without creating a new Interpreter instance
@@ -184,6 +259,10 @@ impl Interpreter {
                Ok(())
             },
             Statement::ImportStatement(decl) => self.eval_import_statement(decl),
+            Statement::ExportStatement(_) => {
+                // Exports are only processed during stdlib loading, ignore during normal execution
+                Ok(())
+            }
         }
    }
 

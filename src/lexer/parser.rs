@@ -4,7 +4,7 @@
 use super::astgen::{
     BinaryOperator, BlockStatement, Expression, FieldDefinition, Identifier, IfAlternative,
     ImportDeclaration, ImportSource, Literal, MethodDefinition, Program, Statement, StructDefinition,
-    TypeAnnotation, UnaryOperator, /* other AST nodes */
+    TypeAnnotation, UnaryOperator, ExportDeclaration, /* other AST nodes */
 };
 use super::token::{Assignment, Keyword, Operator, Punctuation, Special, Token, Position};
 use super::tokenizer::Tokenizer;
@@ -203,6 +203,7 @@ impl<'a> Parser<'a> {
                 self.parse_import_statement()
             }
             Some(Token::Keyword(Keyword::Break)) => self.parse_break_statement(),
+            Some(Token::Keyword(Keyword::Export)) => self.parse_export_statement(),
             Some(Token::Punctuation(Punctuation::LeftBrace)) => {
                 // Allow standalone block? Let's disallow for now.
                 Err(ParseError::UnexpectedToken(format!("{:?}", self.peek_token().unwrap()), "Expected statement start keyword or expression".to_string(), self.last_pos))
@@ -473,6 +474,18 @@ impl<'a> Parser<'a> {
         // Optional semicolon
         consume_optional_token!(self, Token::Punctuation(Punctuation::Semicolon));
         Ok(Statement::BreakStatement)
+    }
+
+    // --- New Parser for Export Statements ---
+    fn parse_export_statement(&mut self) -> Result<Statement, ParseError> {
+        self.next_token(); // Consume 'export'
+
+        // Handle `export <name>;`
+        let name = self.parse_identifier()?;
+        consume_optional_token!(self, Token::Punctuation(Punctuation::Semicolon));
+        Ok(Statement::ExportStatement(ExportDeclaration::Identifier(name)))
+
+        // Removed previous match for `module` and specific file path handling
     }
 
     fn parse_expression_statement(&mut self) -> Result<Statement, ParseError> {

@@ -9,7 +9,7 @@ pub mod structdef; // Added structdef module
 pub use expression::Expression;
 pub use import::{ImportDeclaration, ImportSource};
 pub use literal::Literal;
-pub use statement::{BlockStatement, IfAlternative, Statement};
+pub use statement::{BlockStatement, IfAlternative, Statement, ExportDeclaration}; // Add ExportDeclaration
 pub use structdef::{FieldDefinition, MethodDefinition, StructDefinition}; // Added struct exports
 
 // --- Shared Basic Types ---

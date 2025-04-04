@@ -41,6 +41,7 @@ pub enum Statement {
     ImportStatement(ImportDeclaration),
     // Add break statement support
     BreakStatement,
+    ExportStatement(ExportDeclaration),
     // EmptyStatement // Optional, if needed for things like `;;` 
 }
 
@@ -61,4 +62,11 @@ pub enum IfAlternative {
     Else {
         consequence: BlockStatement,
     },
+}
+
+// --- New Enum for Export Declarations ---
+#[derive(Debug, PartialEq, Clone)]
+pub enum ExportDeclaration {
+    // Module(Identifier),         // Removed: export module <name>;
+    Identifier(Identifier),     // export <name>; (Loads <name>.oxy or <name>/mod.oxy)
 }
