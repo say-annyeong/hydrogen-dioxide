@@ -4,6 +4,7 @@ use std::fmt;
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::any::Any;
 
 // --- Runtime Value Enum ---
 
@@ -19,6 +20,7 @@ pub enum Value {
     StructDefinition(StructDefinitionValue),
     StructInstance(StructInstanceValue),
     BoundMethod(BoundMethodValue),
+    NativeResource(Rc<RefCell<dyn Any>>),
 }
 
 // Represents a struct definition captured at runtime
@@ -66,8 +68,8 @@ impl PartialEq for Value {
                  *l.fields.borrow() == *r.fields.borrow()
              }
             (Value::BoundMethod(l), Value::BoundMethod(r)) => std::ptr::eq(&l.method, &r.method) && l.instance == r.instance,
-            // Struct definitions are generally not comparable for equality in this way
             (Value::StructDefinition(_), Value::StructDefinition(_)) => false,
+            (Value::NativeResource(l), Value::NativeResource(r)) => Rc::ptr_eq(l, r),
             _ => false, // Different types are not equal
         }
     }
@@ -125,6 +127,7 @@ impl fmt::Display for Value {
                  write!(f, " }}")
             },
             Value::BoundMethod(bm) => write!(f, "<bound method {}.{}>", bm.instance.type_name.name, bm.method.name.name),
+            Value::NativeResource(_) => write!(f, "<native resource>"),
         }
     }
 } 

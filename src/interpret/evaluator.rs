@@ -98,11 +98,14 @@ impl Interpreter {
                             let mut potential_file_path = dir_path.join(name);
                             potential_file_path.set_extension("oxy");
 
+                            // println!("DEBUG: Attempting to load exported file: {}", potential_file_path.display()); // DEBUG
+
                             if potential_dir_path.is_dir() {
                                 // It's a subdirectory, load its entry point (mod.oxy)
                                 Self::load_oxygen_module(&potential_dir_path, Rc::clone(&target_env))?;
                             } else if potential_file_path.exists() {
                                 // It's a sibling file, load and execute it.
+                                // println!("DEBUG: Found file, loading: {}", potential_file_path.display()); // DEBUG
                                 let file_code = fs::read_to_string(&potential_file_path)
                                     .map_err(|e| format!("Failed to read {}: {}", potential_file_path.display(), e))?;
 
@@ -117,9 +120,13 @@ impl Interpreter {
                                     return Err(format!("Parse errors in {}:\n{}", potential_file_path.display(), error_details));
                                 }
 
+                                // println!("DEBUG: Interpreting file: {}", potential_file_path.display()); // DEBUG
                                 // Evaluate the file's program using the *same* temporary interpreter
                                 match temp_interpreter.interpret_program_in_place(file_program) {
-                                    Ok(_) => { /* File loaded successfully */ }
+                                    Ok(_) => { 
+                                        // println!("DEBUG: Successfully interpreted file: {}", potential_file_path.display()); // DEBUG
+                                        /* File loaded successfully */ 
+                                    }
                                     Err(errors) => {
                                         let error_details = errors.iter()
                                             .map(|e| format!("- {}", e))
@@ -515,6 +522,14 @@ impl Interpreter {
                     match (&self_val, func.name.as_str()) {
                         (Value::String(s), "to_upper") => Ok(Value::String(s.to_uppercase())),
                         (Value::String(s), "to_lower") => Ok(Value::String(s.to_lowercase())),
+                        (Value::String(_), "trim_end") => { // String captured in __self
+                            // We need the *original* arguments passed to the call
+                            // Call the actual Rust implementation
+                            // Prepend self to the args for the builtin call
+                            let mut final_args = vec![self_val];
+                            final_args.extend(arg_values); 
+                            runtime::stdlib::builtin_string_trim_end(final_args)                            
+                        },
                         (Value::List(l), "contains") => {
                             if arg_values.len() != 1 {
                                 return Err(RuntimeError::TypeError(format!(
@@ -557,12 +572,28 @@ impl Interpreter {
     // Renamed from call_builtin_function to be more specific
     fn call_rust_builtin_function(&mut self, name: &str, args: Vec<Value>) -> Result<Value, RuntimeError> {
          match name {
-             "print" => runtime::stdlib::builtin_print(args),
-             "len" => runtime::stdlib::builtin_len(args), // Keep general len() function
-             "type" => runtime::stdlib::builtin_type(args),
-             // Note: abs, max, min are loaded from Oxygen stdlib now, not handled here.
-             _ => Err(RuntimeError::InvalidOperation(format!("Unknown Rust built-in function: {}", name))),
-         }
+            "print" => runtime::stdlib::builtin_print(args),
+            "println" => runtime::stdlib::builtin_println(args),
+            "len" => runtime::stdlib::builtin_len(args),
+            "type" => runtime::stdlib::builtin_type(args),
+            "to_string" | "__to_string" => runtime::stdlib::builtin_to_string(args),
+            "__tcp_connect" => runtime::stdlib::builtin_tcp_connect(args),
+            "__tcp_connect_with_timeout" => runtime::stdlib::builtin_tcp_connect_with_timeout(args),
+            "__socket_write" => runtime::stdlib::builtin_socket_write(args),
+            "__socket_read" => runtime::stdlib::builtin_socket_read(args),
+            "__http_get" => runtime::stdlib::builtin_http_get(args),
+            // TCP Listener
+            "__tcp_bind" => runtime::stdlib::builtin_tcp_listener_bind(args),
+            "__tcp_accept" => runtime::stdlib::builtin_tcp_listener_accept(args),
+            // UDP Socket
+            "__udp_bind" => runtime::stdlib::builtin_udp_bind(args),
+            "__udp_send_to" => runtime::stdlib::builtin_udp_send_to(args),
+            "__udp_recv_from" => runtime::stdlib::builtin_udp_recv_from(args),
+            // String built-ins
+            "__string_trim_end" => runtime::stdlib::builtin_string_trim_end(args),
+            // Note: abs, max, min are loaded from Oxygen stdlib now, not handled here.
+            _ => Err(RuntimeError::InvalidOperation(format!("Unknown Rust built-in function: {}", name))),
+        }
     }
 
     fn call_user_function(&mut self, func: Function, args: Vec<Value>) -> Result<Value, RuntimeError> {
@@ -655,11 +686,15 @@ impl Interpreter {
                     // Return the length directly as an Int
                     Ok(Value::Int(s.chars().count() as i64))
                 }
-                "to_upper" | "to_lower" => {
-                    // Return a closure (Function) that performs the case conversion
+                "to_upper" | "to_lower" | "trim_end" => {
+                    // Methods returning a function
                     let func = Function {
                         name: member_name.to_string(),
-                        parameters: vec![], // No parameters for these methods
+                        parameters: if member_name == "trim_end" { 
+                            vec![(Identifier { name: "pattern".to_string() }, None)] // trim_end takes pattern
+                        } else {
+                            vec![] // to_upper/to_lower take no args
+                        },
                         body: None,
                         env: Rc::new(RefCell::new(Environment::new())), // Env to capture self
                         is_builtin: true, // Mark as special built-in method
@@ -833,7 +868,8 @@ impl Interpreter {
             // Struct definitions/instances are considered truthy by default
             Value::StructDefinition(_) => true,
             Value::StructInstance(_) => true,
-            Value::BoundMethod(_) => true, // Bound methods are truthy
+            Value::BoundMethod(_) => true,
+            Value::NativeResource(_) => true, // Native resources are truthy
         }
     }
 
@@ -868,6 +904,8 @@ impl Interpreter {
             (Value::StructInstance(l), Value::StructInstance(r)) => Err(RuntimeError::TypeError(format!("Cannot compare struct instances of type {}", l.type_name.name))),
             // Bound methods are not comparable
             (Value::BoundMethod(_), _) | (_, Value::BoundMethod(_)) => Err(RuntimeError::TypeError("Cannot compare bound methods".to_string())),
+            // Native resources are not comparable
+            (Value::NativeResource(_), _) | (_, Value::NativeResource(_)) => Err(RuntimeError::TypeError("Cannot compare native resources".to_string())),
             // Incomparable types
             (l, r) => Err(RuntimeError::TypeError(format!("Cannot compare {} and {}", l.type_name(), r.type_name()))),
         }
@@ -912,6 +950,8 @@ impl Interpreter {
                 // Instance comparison uses the PartialEq impl for StructInstanceValue
                  Ok(std::ptr::eq(&l.method, &r.method) && l.instance == r.instance)
             },
+            // Native resources only equal if same pointer
+            (Value::NativeResource(l), Value::NativeResource(r)) => Ok(Rc::ptr_eq(&l, &r)),
             // Different types are not equal
             _ => Ok(false),
         }
@@ -932,6 +972,7 @@ impl Value {
             Value::StructDefinition(_) => "struct definition",
             Value::StructInstance(_) => "struct instance",
             Value::BoundMethod(_) => "bound method",
+            Value::NativeResource(_) => "native resource",
         }
     }
 } 
