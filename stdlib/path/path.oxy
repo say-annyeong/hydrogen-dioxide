@@ -1,0 +1,46 @@
+// stdlib/path/path.oxy
+
+// Basic Path manipulation struct
+
+struct Path {
+    raw: string, // Store the path string internally
+}
+
+impl Path {
+    // Constructor-like function (using 'new' convention)
+    // Note: Oxygen doesn't have explicit constructors yet,
+    // so this is a static-like method called on the type itself (if we supported that)
+    // For now, we make it a regular function that returns a Path instance.
+    fn new(path_str: string) -> Path { // Type annotation for return type needed?
+        return Path { raw: path_str };
+    }
+
+    // Instance method to get the raw string
+    fn as_string(self) -> string {
+        return self.raw;
+    }
+    
+    // Instance method for length
+    fn len(self) -> int {
+        return self.raw.length; // Use built-in string length
+    }
+    
+    // Example: Check if path is absolute (simple version)
+    fn is_absolute(self) -> bool {
+        // Very basic check, only looks for leading '/'
+        if (self.raw.length > 0 && self.raw[0] == '/') {
+            return true;
+        }
+        // TODO: Handle Windows paths (e.g., C:\)
+        return false;
+    }
+    
+    // TODO: Add methods like parent(), filename(), extension(), join(), etc.
+}
+
+// --- Workaround for lack of static methods/constructors ---
+// This global function acts as the constructor for Path instances.
+// TODO: Replace with static `Path.new()` when supported.
+fn new_path(path_str: string) -> Path {
+    return Path { raw: path_str };
+} 
