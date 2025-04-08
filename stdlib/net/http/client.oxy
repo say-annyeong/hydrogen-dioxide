@@ -1,0 +1,43 @@
+// stdlib/net/http/client.oxy
+
+// Placeholder for HTTP client functionality
+// Implementation will rely on Rust built-ins.
+
+// Example potential structure (implementation TBD in Rust):
+/*
+struct Response {
+    status_code: int,
+    headers: Dict, // Requires Dict type
+    body: string,
+}
+
+// Would likely call a Rust built-in: __builtin_http_get(url)
+fn get(url: string) -> Response {
+    print("[HTTP GET Placeholder] Requesting:", url);
+    // ... call Rust built-in ...
+    // ... return placeholder Response struct ...
+    return null; // Placeholder
+}
+*/
+
+// Basic HTTP client functionality
+
+// Simple struct to hold basic HTTP response info
+struct HttpResponse {
+    status_code: int,
+    // headers: Dict, // TODO: Add Dict type later
+    body: string,
+}
+
+// Performs a simple HTTP GET request.
+// Returns an HttpResponse struct containing status_code and body.
+// Error handling and response parsing are minimal.
+// Uses the underlying Rust built-in function __http_get.
+fn get(url: string) -> HttpResponse {
+    let response_instance = __http_get(url); // Call the Rust built-in
+    // TODO: Improve error handling if __http_get returns non-struct
+    return response_instance;
+}
+
+// TODO: Add post, put, delete etc. later
+// TODO: Add Response struct and parsing

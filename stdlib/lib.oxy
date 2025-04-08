@@ -10,5 +10,25 @@ export num;
 export path;
 export string;
 export list;
+export net;
+
+// Export core modules
+export io;
+
+// Export common built-in functions directly for convenience
+let print = print;
+let println = println;
+let len = len;
+let type = type;
+let to_string = to_string;
+
+
+
+// --- General Utility Functions ---
+
+// Converts any value to its string representation
+fn to_string(val: any) -> string {
+    return __to_string(val); // Native implementation
+}
 
 // See individual module files (e.g., cmp/ord.oxy, num/abs.oxy) for implementations. 
