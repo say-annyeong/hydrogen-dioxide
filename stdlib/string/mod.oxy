@@ -1,1 +1,3 @@
- 
+fn trim_end(s: string, pattern: string) -> string {
+    return __string_trim_end(s, pattern); // Call native function
+} 
