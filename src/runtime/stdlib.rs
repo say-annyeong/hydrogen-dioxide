@@ -421,6 +421,10 @@ pub fn register_stdlib(env: &mut crate::interpret::environment::Environment) {
         // TCP Listener built-ins
         ("__tcp_bind", builtin_tcp_listener_bind),
         ("__tcp_accept", builtin_tcp_listener_accept),
+        // UDP Socket built-ins
+        ("__udp_bind", builtin_udp_bind),
+        ("__udp_send_to", builtin_udp_send_to),
+        ("__udp_recv_from", builtin_udp_recv_from),
         // String built-ins
         ("__string_trim_end", builtin_string_trim_end),
         // Provide __to_string alias if needed by stdlib internal calls, although direct registration is preferred
@@ -439,6 +443,100 @@ pub fn register_stdlib(env: &mut crate::interpret::environment::Environment) {
                 is_builtin: true,
             }))
         );
+    }
+}
+
+// --- UDP Built-ins ---
+
+// Binds a UDP socket to an address and port
+pub fn builtin_udp_bind(args: Vec<Value>) -> Result<Value, RuntimeError> {
+    if args.len() != 2 {
+        return Err(RuntimeError::TypeError("__udp_bind expects 2 arguments (address: string, port: int)".to_string()));
+    }
+    let address = match &args[0] {
+        Value::String(s) => s,
+        _ => return Err(RuntimeError::TypeError("udp_bind argument 1 must be a string address".to_string())),
+    };
+    let port = match &args[1] {
+        Value::Int(i) => *i as u16,
+        _ => return Err(RuntimeError::TypeError("udp_bind argument 2 must be an integer port".to_string())),
+    };
+
+    let addr_str = format!("{}:{}", address, port);
+    match std::net::UdpSocket::bind(&addr_str) {
+        Ok(socket) => {
+            let resource: Rc<RefCell<dyn Any>> = Rc::new(RefCell::new(socket));
+            Ok(Value::NativeResource(resource))
+        }
+        Err(e) => Err(RuntimeError::InvalidOperation(format!(
+            "Failed to bind UDP socket to {}: {}", addr_str, e
+        )))
+    }
+}
+
+// Sends data from a UDP socket resource to a specified address
+pub fn builtin_udp_send_to(args: Vec<Value>) -> Result<Value, RuntimeError> {
+    if args.len() != 3 {
+        return Err(RuntimeError::TypeError("__udp_send_to expects 3 arguments (socket_resource, data: string, target_addr: string)".to_string()));
+    }
+    let resource_val = match &args[0] {
+        Value::NativeResource(res) => Rc::clone(res),
+        _ => return Err(RuntimeError::TypeError("udp_send_to argument 1 must be a native UDP socket resource".to_string())),
+    };
+    let data = match &args[1] {
+        Value::String(s) => s.as_bytes(),
+        _ => return Err(RuntimeError::TypeError("udp_send_to argument 2 must be a string".to_string())),
+    };
+    let target_addr = match &args[2] {
+        Value::String(s) => s.as_str(),
+        _ => return Err(RuntimeError::TypeError("udp_send_to argument 3 must be a string address (e.g., \"host:port\")".to_string())),
+    };
+
+    // Attempt to downcast and send
+    let borrowed_resource = resource_val.borrow();
+    if let Some(socket) = borrowed_resource.downcast_ref::<std::net::UdpSocket>() {
+        match socket.send_to(data, target_addr) {
+            Ok(bytes_sent) => Ok(Value::Int(bytes_sent as i64)),
+            Err(e) => Err(RuntimeError::InvalidOperation(format!("UDP send_to error: {}", e)))
+        }
+    } else {
+        Err(RuntimeError::TypeError("udp_send_to expects a UdpSocket resource".to_string()))
+    }
+}
+
+// Receives data on a UDP socket resource, returns [data_string, sender_addr_string]
+pub fn builtin_udp_recv_from(args: Vec<Value>) -> Result<Value, RuntimeError> {
+    if args.len() != 2 {
+        return Err(RuntimeError::TypeError("__udp_recv_from expects 2 arguments (socket_resource, buffer_size: int)".to_string()));
+    }
+     let resource_val = match &args[0] {
+        Value::NativeResource(res) => Rc::clone(res),
+        _ => return Err(RuntimeError::TypeError("udp_recv_from argument 1 must be a native UDP socket resource".to_string())),
+    };
+    let buffer_size = match &args[1] {
+        Value::Int(i) if *i > 0 => *i as usize,
+        _ => return Err(RuntimeError::TypeError("udp_recv_from argument 2 must be a positive integer buffer size".to_string())),
+    };
+
+    // Attempt to downcast and receive
+    let borrowed_resource = resource_val.borrow();
+    if let Some(socket) = borrowed_resource.downcast_ref::<std::net::UdpSocket>() {
+        let mut buffer = vec![0; buffer_size];
+        match socket.recv_from(&mut buffer) {
+            Ok((bytes_read, src_addr)) => {
+                // Convert read bytes to string (potentially lossy)
+                buffer.truncate(bytes_read); 
+                let data_string = String::from_utf8_lossy(&buffer).to_string();
+                let sender_addr_string = src_addr.to_string();
+                Ok(Value::List(vec![
+                    Value::String(data_string),
+                    Value::String(sender_addr_string),
+                ]))
+            }
+            Err(e) => Err(RuntimeError::InvalidOperation(format!("UDP recv_from error: {}", e)))
+        }
+    } else {
+        Err(RuntimeError::TypeError("udp_recv_from expects a UdpSocket resource".to_string()))
     }
 }
 

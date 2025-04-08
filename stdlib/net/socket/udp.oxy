@@ -1,0 +1,48 @@
+// stdlib/net/socket/udp.oxy
+
+// --- UDP Socket Implementation ---
+
+// Represents a UDP socket
+struct UdpSocket {
+    __handle: native // Use 'native' type annotation like in tcp.oxy
+}
+
+// Method to send data to a target address
+impl UdpSocket {
+    fn send_to(self, data: string, target_addr: string) -> int {
+        // target_addr should be in "host:port" format
+        let bytes_sent = __udp_send_to(self.__handle, data, target_addr);
+        if (type(bytes_sent) == "int") {
+            return bytes_sent;
+        } else {
+            print("Error in UdpSocket.send_to native call:", bytes_sent);
+            return -1; // Indicate error
+        }
+    }
+
+    // Method to receive data
+    // Returns a list [data_string, sender_addr_string] or null on error
+    fn recv_from(self, buffer_size: int) -> list {
+        let result = __udp_recv_from(self.__handle, buffer_size);
+        if (type(result) == "list") {
+            return result;
+        } else {
+            print("Error in UdpSocket.recv_from native call:", result);
+            return null; // Indicate error
+        }
+    }
+    
+    // Close method (optional, as drop handles it in Rust)
+    // fn close(self) { ... }
+}
+
+// Global function to bind a UDP socket
+fn udp_bind(address: string, port: int) -> UdpSocket {
+    let handle = __udp_bind(address, port);
+    if (type(handle) == "native resource") {
+        return UdpSocket { __handle: handle };
+    } else {
+        print("Error binding UDP socket:", handle); 
+        return null; // Return null on failure
+    }
+}

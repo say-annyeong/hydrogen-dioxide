@@ -1,0 +1,87 @@
+// stdlib/net/socket/tcp.oxy
+
+// Basic TCP Socket functionality
+
+// Represents a TCP connection.
+// Holds an opaque native resource handle provided by Rust.
+struct TcpStream {
+    // Internal handle to the Rust socket
+    // Users should not interact with this directly.
+    __handle: native, // Using 'native' as a placeholder keyword/type
+}
+
+impl TcpStream {
+    // Writes data (string) to the stream.
+    // Returns the number of bytes written.
+    fn write(self, data: string) -> int {
+        return __socket_write(self.__handle, data);
+    }
+
+    // Reads data from the stream up to buffer_size.
+    // Returns the data read as a string.
+    fn read(self, buffer_size: int) -> string {
+        return __socket_read(self.__handle, buffer_size);
+    }
+
+    // Closes the connection.
+    // Note: Rust's TcpStream drops automatically, but explicit close can be useful.
+    fn close(self) {
+        // TODO: Implement __socket_close built-in if needed for explicit resource cleanup beyond Drop.
+        // For now, does nothing as Drop handles it.
+        // print("[TCP Close] Connection for handle", self.__handle, "will close on drop.");
+    }
+}
+
+// --- TcpListener Definition ---
+struct TcpListener {
+    __handle: native, // Handle to the Rust TcpListener
+}
+
+impl TcpListener {
+    // Accepts a new connection.
+    // Returns a list: [TcpStream, peer_address_string] or null on error (needs better error handling)
+    fn accept(self) -> list { // Return type annotation?
+        let result = __tcp_accept(self.__handle);
+        // Basic check if result is a list (success)
+        if (type(result) == "list" && len(result) == 2) {
+            // Need to wrap the native stream handle in a TcpStream struct
+            let stream_handle = result[0];
+            let peer_addr = result[1];
+            let stream_instance = TcpStream { __handle: stream_handle };
+            return [stream_instance, peer_addr];
+        } else {
+            // TODO: Better error propagation
+            print("Error accepting connection:", result);
+            return null;
+        }
+    }
+
+    // TODO: Add close method if needed (Drop might suffice)
+}
+
+// --- Global Functions (acting as static methods/constructors) ---
+
+// Connects to a TCP address and port.
+// Returns a TcpStream instance on success.
+fn tcp_connect(address: string, port: int) -> TcpStream {
+    let handle = __tcp_connect(address, port); // Call Rust built-in
+    // Check if handle is null/error? Need error handling improvements.
+    return TcpStream { __handle: handle };
+}
+
+// Binds a TCP listener to the specified address and port.
+// Returns a TcpListener instance.
+fn tcp_bind(address: string, port: int) -> TcpListener {
+    let handle = __tcp_bind(address, port);
+    return TcpListener { __handle: handle };
+}
+
+// Connect to a TCP server with a specified timeout (in milliseconds)
+fn tcp_connect_timeout(address: string, port: int, timeout_ms: int) -> TcpStream {
+    let handle = __tcp_connect_with_timeout(address, port, timeout_ms); // Native call
+    if (type(handle) == "native resource") {
+        return TcpStream { __handle: handle };
+    } else {
+        return null; // Return null on failure (timeout, refused, etc.)
+    }
+}

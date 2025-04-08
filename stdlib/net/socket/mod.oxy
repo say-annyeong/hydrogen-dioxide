@@ -1,0 +1,7 @@
+// stdlib/net/socket/mod.oxy
+
+// Exports types related to TCP/UDP sockets
+export tcp; // Placeholder for TCP socket functions/struct
+export udp; // Placeholder for UDP later
+
+
