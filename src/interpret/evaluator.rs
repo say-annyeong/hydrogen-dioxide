@@ -262,10 +262,71 @@ impl Interpreter {
                 Ok(())
             },
             Statement::ForStatement { variable, iterable, body } => {
-                 // TODO: Implement proper iteration
-                eprintln!("Warning: For statement encountered but looping/iteration logic not implemented.");
-                self.eval_expression(iterable)?;
-               Ok(())
+                let iterable_val = self.eval_expression(iterable)?;
+
+                // Create a loop scope environment that persists across iterations
+                let loop_env = Rc::new(RefCell::new(Environment::new_with_outer(Rc::clone(&self.environment))));
+                let previous_env = std::mem::replace(&mut self.environment, Rc::clone(&loop_env));
+
+                // Helper to set or define the loop variable
+                let set_loop_var = |env: &Rc<RefCell<Environment>>, name: &str, value: Value| {
+                    if env.borrow().get(name).is_some() {
+                        let _ = env.borrow_mut().assign(name, value);
+                    } else {
+                        env.borrow_mut().define(name.to_string(), value);
+                    }
+                };
+
+                let result = match iterable_val {
+                    Value::List(items) => {
+                        let mut out: Result<(), RuntimeError> = Ok(());
+                        for item in items.into_iter() {
+                            set_loop_var(&loop_env, &variable.name, item);
+                            match self.eval_block_statement(body) {
+                                Ok(_) => {}
+                                Err(RuntimeError::Break) => { out = Ok(()); break; }
+                                Err(RuntimeError::Return(v)) => { out = Err(RuntimeError::Return(v)); break; }
+                                Err(e) => { out = Err(e); break; }
+                            }
+                        }
+                        out
+                    }
+                    Value::String(s) => {
+                        let mut out: Result<(), RuntimeError> = Ok(());
+                        for ch in s.chars() {
+                            set_loop_var(&loop_env, &variable.name, Value::String(std::borrow::Cow::Owned(ch.to_string())));
+                            match self.eval_block_statement(body) {
+                                Ok(_) => {}
+                                Err(RuntimeError::Break) => { out = Ok(()); break; }
+                                Err(RuntimeError::Return(v)) => { out = Err(RuntimeError::Return(v)); break; }
+                                Err(e) => { out = Err(e); break; }
+                            }
+                        }
+                        out
+                    }
+                    Value::Dict(map) => {
+                        let keys: Vec<String> = map.keys().cloned().collect();
+                        let mut out: Result<(), RuntimeError> = Ok(());
+                        for key in keys {
+                            set_loop_var(&loop_env, &variable.name, Value::String(std::borrow::Cow::Owned(key)));
+                            match self.eval_block_statement(body) {
+                                Ok(_) => {}
+                                Err(RuntimeError::Break) => { out = Ok(()); break; }
+                                Err(RuntimeError::Return(v)) => { out = Err(RuntimeError::Return(v)); break; }
+                                Err(e) => { out = Err(e); break; }
+                            }
+                        }
+                        out
+                    }
+                    other => Err(RuntimeError::TypeError(format!(
+                        "Cannot iterate over type {}",
+                        other.type_name()
+                    ))),
+                };
+
+                // Restore previous environment
+                self.environment = previous_env;
+                result
             },
             Statement::StructDeclaration(struct_def) => {
                 // Store the struct definition itself in the environment
@@ -385,9 +446,30 @@ impl Interpreter {
             Expression::Literal(literal) => self.eval_literal(literal),
             Expression::Identifier(ident) => self.eval_identifier(ident),
             Expression::BinaryOperation { left, op, right } => {
-                let left_val = self.eval_expression(left)?;
-                let right_val = self.eval_expression(right)?;
-                self.eval_binary_operation(op, left_val, right_val)
+                // Implement short-circuiting for And/Or
+                match op {
+                    BinaryOperator::And => {
+                        let left_val = self.eval_expression(left)?;
+                        if !self.is_truthy(left_val.clone()) {
+                            return Ok(Value::Boolean(false));
+                        }
+                        let right_val = self.eval_expression(right)?;
+                        return Ok(Value::Boolean(self.is_truthy(right_val)));
+                    }
+                    BinaryOperator::Or => {
+                        let left_val = self.eval_expression(left)?;
+                        if self.is_truthy(left_val.clone()) {
+                            return Ok(Value::Boolean(true));
+                        }
+                        let right_val = self.eval_expression(right)?;
+                        return Ok(Value::Boolean(self.is_truthy(right_val)));
+                    }
+                    _ => {
+                        let left_val = self.eval_expression(left)?;
+                        let right_val = self.eval_expression(right)?;
+                        self.eval_binary_operation(op, left_val, right_val)
+                    }
+                }
             },
             Expression::UnaryOperation { op, operand } => {
                 let operand_val = self.eval_expression(operand)?;
@@ -419,7 +501,7 @@ impl Interpreter {
         match literal {
             Literal::Int(s) => s.parse::<i64>().map(Value::Int).map_err(|e| RuntimeError::InvalidOperation(format!("Invalid integer literal '{}': {}", s, e))),
             Literal::Float(s) => s.parse::<f64>().map(Value::Float).map_err(|e| RuntimeError::InvalidOperation(format!("Invalid float literal '{}': {}", s, e))),
-            Literal::String(s) => Ok(Value::String(s.clone())),
+            Literal::String(s) => Ok(Value::String(std::borrow::Cow::Owned(s.clone()))),
             Literal::Boolean(b) => Ok(Value::Boolean(*b)),
             Literal::Null => Ok(Value::Null),
         }
@@ -446,7 +528,7 @@ impl Interpreter {
                 (Value::Float(l), Value::Float(r)) => Ok(Value::Float(l + r)),
                 (Value::Int(l), Value::Float(r)) => Ok(Value::Float(l as f64 + r)),
                 (Value::Float(l), Value::Int(r)) => Ok(Value::Float(l + r as f64)),
-                (Value::String(l), Value::String(r)) => Ok(Value::String(l + &r)),
+                (Value::String(l), Value::String(r)) => Ok(Value::String(std::borrow::Cow::Owned(l.into_owned() + &r))),
                 (Value::List(l), Value::List(r)) => {
                     let mut result = l.clone();
                     result.extend(r.clone());
@@ -486,7 +568,7 @@ impl Interpreter {
            BinaryOperator::GreaterThan => self.compare_values(left, right).map(|ord| Value::Boolean(ord == Some(std::cmp::Ordering::Greater))),
            BinaryOperator::LessEqual => self.compare_values(left, right).map(|ord| Value::Boolean(ord != Some(std::cmp::Ordering::Greater))),
            BinaryOperator::GreaterEqual => self.compare_values(left, right).map(|ord| Value::Boolean(ord != Some(std::cmp::Ordering::Less))),
-           // Logical (implement short-circuiting later)
+           // Logical (short-circuiting is handled earlier)
            BinaryOperator::And => Ok(Value::Boolean(self.is_truthy(left) && self.is_truthy(right))),
            BinaryOperator::Or => Ok(Value::Boolean(self.is_truthy(left) || self.is_truthy(right))),
        }
@@ -520,8 +602,8 @@ impl Interpreter {
 
                     // Execute the specific built-in method logic
                     match (&self_val, func.name.as_str()) {
-                        (Value::String(s), "to_upper") => Ok(Value::String(s.to_uppercase())),
-                        (Value::String(s), "to_lower") => Ok(Value::String(s.to_lowercase())),
+                        (Value::String(s), "to_upper") => Ok(Value::String(std::borrow::Cow::Owned(s.to_uppercase()))),
+                        (Value::String(s), "to_lower") => Ok(Value::String(std::borrow::Cow::Owned(s.to_lowercase()))),
                         (Value::String(_), "trim_end") => { // String captured in __self
                             // We need the *original* arguments passed to the call
                             // Call the actual Rust implementation
@@ -638,13 +720,22 @@ impl Interpreter {
     }
 
     fn eval_dict_initializer(&mut self, pairs: &[(Expression, Expression)]) -> Result<Value, RuntimeError> {
-        // TODO: Implement actual Dict value type
-        for (k, v) in pairs {
-           self.eval_expression(k)?;
-           self.eval_expression(v)?;
+        let mut map = std::collections::HashMap::new();
+        for (key_expr, value_expr) in pairs {
+            let key_val = self.eval_expression(key_expr)?;
+            let key_string = match key_val {
+                Value::String(s) => s.into_owned(),
+                other => {
+                    return Err(RuntimeError::TypeError(format!(
+                        "Dict keys must be strings, got {}",
+                        other.type_name()
+                    )))
+                }
+            };
+            let value_val = self.eval_expression(value_expr)?;
+            map.insert(key_string, value_val);
         }
-        eprintln!("Warning: Dict initializer evaluated but dict value not created.");
-        Ok(Value::Null) // Placeholder
+        Ok(Value::Dict(map))
     }
 
     fn eval_index_access(&mut self, base_expr: &Expression, index_expr: &Expression) -> Result<Value, RuntimeError> {
@@ -658,7 +749,7 @@ impl Interpreter {
                 }
                 let u_idx = idx as usize;
                 match s.chars().nth(u_idx) {
-                    Some(ch) => Ok(Value::String(ch.to_string())),
+                    Some(ch) => Ok(Value::String(std::borrow::Cow::Owned(ch.to_string()))),
                     None => Err(RuntimeError::InvalidOperation(format!("Index out of bounds: index {} >= string length {}", idx, s.chars().count())))
                 }
             }
@@ -671,6 +762,15 @@ impl Interpreter {
                     return Err(RuntimeError::InvalidOperation(format!("Index out of bounds: index {} >= list length {}", idx, list.len())));
                 }
                 Ok(list[u_idx].clone())
+            }
+            (Value::Dict(map), Value::String(key)) => {
+                match map.get(key.as_ref()) {
+                    Some(v) => Ok(v.clone()),
+                    None => Err(RuntimeError::InvalidOperation(format!(
+                        "Key '{}' not found in dict",
+                        key
+                    )))
+                }
             }
             (b, i) => Err(RuntimeError::TypeError(format!("Cannot index type {} with type {}", b, i))),
         }
@@ -729,6 +829,14 @@ impl Interpreter {
                 }
                  _ => Err(RuntimeError::InvalidOperation(format!(
                     "List has no member or method named '{}'", member_name
+                )))
+            },
+
+            Value::Dict(map) => match member_name {
+                "length" => Ok(Value::Int(map.len() as i64)),
+                _ => Err(RuntimeError::InvalidOperation(format!(
+                    "Dict has no member or method named '{}'",
+                    member_name
                 )))
             },
 
@@ -865,6 +973,7 @@ impl Interpreter {
             Value::String(s) => !s.is_empty(),
             Value::Function(_) => true,
             Value::List(list) => !list.is_empty(),
+            Value::Dict(map) => !map.is_empty(),
             // Struct definitions/instances are considered truthy by default
             Value::StructDefinition(_) => true,
             Value::StructInstance(_) => true,
@@ -899,6 +1008,8 @@ impl Interpreter {
                 // All elements equal
                 Ok(Some(std::cmp::Ordering::Equal))
             }
+            // Dicts are not comparable by default
+            (Value::Dict(_), Value::Dict(_)) => Err(RuntimeError::TypeError("Cannot compare dicts".to_string())),
             // Structs are not comparable by default
             (Value::StructDefinition(l), Value::StructDefinition(r)) => Err(RuntimeError::TypeError(format!("Cannot compare struct definitions: {} and {}", l.name.name, r.name.name))),
             (Value::StructInstance(l), Value::StructInstance(r)) => Err(RuntimeError::TypeError(format!("Cannot compare struct instances of type {}", l.type_name.name))),
@@ -937,6 +1048,7 @@ impl Interpreter {
                 // All elements are equal
                 Ok(true)
             }
+            (Value::Dict(l), Value::Dict(r)) => Ok(l == r),
             (Value::StructInstance(l), Value::StructInstance(r)) => {
                  // Instances are equal if they are the same type and fields are equal
                  Ok(l.type_name == r.type_name &&
@@ -969,6 +1081,7 @@ impl Value {
             Value::Null => "null",
             Value::Function(_) => "function",
             Value::List(_) => "list",
+            Value::Dict(_) => "dict",
             Value::StructDefinition(_) => "struct definition",
             Value::StructInstance(_) => "struct instance",
             Value::BoundMethod(_) => "bound method",
