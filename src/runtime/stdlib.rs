@@ -52,8 +52,9 @@ pub fn builtin_len(args: Vec<Value>) -> Result<Value, RuntimeError> {
     match &args[0] {
         Value::String(s) => Ok(Value::Int(s.chars().count() as i64)),
         Value::List(list) => Ok(Value::Int(list.len() as i64)),
+        Value::Dict(map) => Ok(Value::Int(map.len() as i64)),
         _ => Err(RuntimeError::TypeError(format!(
-            "len() expects a string or list, got {}",
+            "len() expects a string, list, or dict, got {}",
             args[0]
         ))),
     }
@@ -77,12 +78,13 @@ pub fn builtin_type(args: Vec<Value>) -> Result<Value, RuntimeError> {
         Value::Function(_) => "function",
         Value::List(_) => "list",
         Value::StructDefinition(def) => def.name.name.as_str(),
+        Value::Dict(_) => "dict",
         Value::StructInstance(inst) => inst.type_name.name.as_str(),
         Value::BoundMethod(_) => "bound method",
         Value::NativeResource(_) => "native resource",
     };
 
-    Ok(Value::String(type_str.to_string()))
+    Ok(Value::String(std::borrow::Cow::Owned(type_str.to_string())))
 }
 
 // --- Networking Built-ins ---
@@ -200,7 +202,7 @@ pub fn builtin_socket_read(args: Vec<Value>) -> Result<Value, RuntimeError> {
                 // Convert read bytes to string (potentially lossy)
                 buffer.truncate(bytes_read); // Important: only use read bytes
                 let result_string = String::from_utf8_lossy(&buffer).to_string();
-                Ok(Value::String(result_string))
+                Ok(Value::String(std::borrow::Cow::Owned(result_string)))
             }
             Err(e) => Err(RuntimeError::InvalidOperation(format!("Socket read error: {}", e)))
         }
@@ -293,7 +295,7 @@ pub fn builtin_http_get(args: Vec<Value>) -> Result<Value, RuntimeError> {
             // Create the StructInstanceValue for HttpResponse
             let mut fields = HashMap::new();
             fields.insert("status_code".to_string(), Value::Int(status_code));
-            fields.insert("body".to_string(), Value::String(body_string));
+            fields.insert("body".to_string(), Value::String(std::borrow::Cow::Owned(body_string)));
 
             Ok(Value::StructInstance(StructInstanceValue {
                 // Assume HttpResponse struct name is available globally or via lookup?
@@ -355,7 +357,7 @@ pub fn builtin_tcp_listener_accept(args: Vec<Value>) -> Result<Value, RuntimeErr
                 let stream_resource: Rc<RefCell<dyn Any>> = Rc::new(RefCell::new(stream));
                 let stream_val = Value::NativeResource(stream_resource);
                 // Get peer address as string
-                let addr_val = Value::String(socket_addr.to_string());
+                let addr_val = Value::String(std::borrow::Cow::Owned(socket_addr.to_string()));
                 // Return as a list [stream, address]
                 Ok(Value::List(vec![stream_val, addr_val]))
             }
@@ -385,7 +387,7 @@ pub fn builtin_string_trim_end(args: Vec<Value>) -> Result<Value, RuntimeError> 
     // This matches typical trim behavior.
     let trimmed_s = s.trim_end_matches(|c| pattern.contains(c));
 
-    Ok(Value::String(trimmed_s.to_string()))
+    Ok(Value::String(std::borrow::Cow::Owned(trimmed_s.to_string())))
 }
 
 // Generic to_string implementation
@@ -395,7 +397,7 @@ pub fn builtin_to_string(args: Vec<Value>) -> Result<Value, RuntimeError> {
     }
     // Use the Display implementation of the Value enum
     let s = format!("{}", args[0]);
-    Ok(Value::String(s))
+    Ok(Value::String(std::borrow::Cow::Owned(s)))
 }
 
 /// Register all stdlib functions in an Interpreter environment.
@@ -488,7 +490,7 @@ pub fn builtin_udp_send_to(args: Vec<Value>) -> Result<Value, RuntimeError> {
         _ => return Err(RuntimeError::TypeError("udp_send_to argument 2 must be a string".to_string())),
     };
     let target_addr = match &args[2] {
-        Value::String(s) => s.as_str(),
+        Value::String(s) => s.as_ref(),
         _ => return Err(RuntimeError::TypeError("udp_send_to argument 3 must be a string address (e.g., \"host:port\")".to_string())),
     };
 
@@ -529,8 +531,8 @@ pub fn builtin_udp_recv_from(args: Vec<Value>) -> Result<Value, RuntimeError> {
                 let data_string = String::from_utf8_lossy(&buffer).to_string();
                 let sender_addr_string = src_addr.to_string();
                 Ok(Value::List(vec![
-                    Value::String(data_string),
-                    Value::String(sender_addr_string),
+                    Value::String(std::borrow::Cow::Owned(data_string)),
+                    Value::String(std::borrow::Cow::Owned(sender_addr_string)),
                 ]))
             }
             Err(e) => Err(RuntimeError::InvalidOperation(format!("UDP recv_from error: {}", e)))
