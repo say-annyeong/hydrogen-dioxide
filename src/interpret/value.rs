@@ -1,6 +1,7 @@
 use crate::lexer::astgen::{BlockStatement, Identifier, TypeAnnotation, FieldDefinition, ImplMethodDefinition};
 use crate::interpret::environment::Environment;
 use std::fmt;
+use std::borrow::Cow;
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -12,11 +13,12 @@ use std::any::Any;
 pub enum Value {
     Int(i64),
     Float(f64),
-    String(String),
+    String(Cow<'static, str>),
     Boolean(bool),
     Null,
     Function(Box<Function>),
     List(Vec<Value>),
+    Dict(HashMap<String, Value>),
     StructDefinition(StructDefinitionValue),
     StructInstance(StructInstanceValue),
     BoundMethod(BoundMethodValue),
@@ -61,6 +63,7 @@ impl PartialEq for Value {
             (Value::Boolean(l), Value::Boolean(r)) => l == r,
             (Value::Null, Value::Null) => true,
             (Value::List(l), Value::List(r)) => l == r, // Relies on PartialEq for Vec<Value>
+            (Value::Dict(l), Value::Dict(r)) => l == r,
             (Value::Function(l), Value::Function(r)) => l == r, // Uses Function's PartialEq
             (Value::StructInstance(l), Value::StructInstance(r)) => {
                  // Instances are equal if they are the same type and fields are equal
@@ -113,6 +116,16 @@ impl fmt::Display for Value {
                 }
                 write!(f, "]")
             },
+            Value::Dict(map) => {
+                write!(f, "{{")?;
+                let mut first = true;
+                for (k, v) in map.iter() {
+                    if !first { write!(f, ", ")?; }
+                    write!(f, "{}: {}", k, v)?;
+                    first = false;
+                }
+                write!(f, "}}")
+            }
             Value::StructDefinition(def) => write!(f, "<struct {}>", def.name.name),
             Value::StructInstance(inst) => {
                 // Basic display for struct instance
