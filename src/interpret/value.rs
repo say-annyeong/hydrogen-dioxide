@@ -2,6 +2,27 @@ use crate::lexer::astgen::{BlockStatement, Identifier, TypeAnnotation, FieldDefi
 use crate::interpret::environment::Environment;
 use std::fmt;
 use std::borrow::Cow;
+// Builtin function identifiers for fast dispatch
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BuiltinId {
+    Print,
+    Println,
+    Len,
+    Type,
+    ToString,
+    TcpConnect,
+    TcpConnectWithTimeout,
+    SocketWrite,
+    SocketRead,
+    HttpGet,
+    TcpBind,
+    TcpAccept,
+    UdpBind,
+    UdpSendTo,
+    UdpRecvFrom,
+    StringTrimEnd,
+}
+
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -86,6 +107,7 @@ pub struct Function {
     pub body: Option<BlockStatement>, // None for built-in functions
     pub env: Rc<RefCell<Environment>>, // Capture the defining environment (closure)
     pub is_builtin: bool,
+    pub builtin_id: Option<BuiltinId>,
 }
 
 // We need a custom PartialEq impl for Function to avoid Environment comparison issues

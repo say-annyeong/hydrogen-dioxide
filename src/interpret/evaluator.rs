@@ -3,7 +3,7 @@ use crate::lexer::astgen::{
     IfAlternative, ImportDeclaration, ImportSource, ExportDeclaration // Ensure IfAlternative, ImportDeclaration, and ImportSource are imported if used
 };
 use crate::runtime; // Import the runtime module (for stdlib)
-use crate::interpret::value::{Value, Function, StructDefinitionValue, StructInstanceValue, BoundMethodValue};
+use crate::interpret::value::{Value, Function, StructDefinitionValue, StructInstanceValue, BoundMethodValue, BuiltinId};
 use crate::interpret::environment::Environment;
 use crate::interpret::error::RuntimeError;
 
@@ -16,11 +16,63 @@ use std::collections::HashMap; // Add HashMap
 
 // --- Interpreter ---
 
+// Small cache for common builtins to avoid frequent hashmap lookups in stdlib env
+#[derive(Default)]
+pub struct BuiltinsCache {
+    map: HashMap<String, Value>,
+}
+
+impl BuiltinsCache {
+    fn new(std_env: &Environment) -> Self {
+        // List of builtin names registered in runtime::stdlib::register_stdlib
+        const NAMES: &[&str] = &[
+            "print", "println", "len", "type", "to_string", "__to_string",
+            "__tcp_connect", "__tcp_connect_with_timeout", "__socket_write", "__socket_read",
+            "__http_get", "__tcp_bind", "__tcp_accept", "__udp_bind", "__udp_send_to", "__udp_recv_from",
+            "__string_trim_end",
+        ];
+        let mut map = HashMap::with_capacity(NAMES.len());
+        for &name in NAMES.iter() {
+            if let Some(v) = std_env.get(name) {
+                map.insert(name.to_string(), v);
+            }
+        }
+        BuiltinsCache { map }
+    }
+
+    fn get(&self, name: &str) -> Option<Value> {
+        self.map.get(name).cloned()
+    }
+}
+
+// Lightweight call frame storing locals accessed by slot index
+#[derive(Default, Clone)]
+struct Frame {
+    // locals[slot] is the value bound to that parameter/local slot
+    locals: Vec<Value>,
+    // mapping from parameter name to slot index
+    param_slots: HashMap<String, usize>,
+    // mapping from local name (top-level in function) to slot index
+    local_slots: HashMap<String, usize>,
+}
+
+impl Frame {
+    fn with_capacity(cap: usize) -> Self {
+        Frame { locals: Vec::with_capacity(cap), param_slots: HashMap::with_capacity(cap), local_slots: HashMap::with_capacity(cap) }
+    }
+}
+
 pub struct Interpreter {
     // The main environment for user code execution
     environment: Rc<RefCell<Environment>>,
     // A separate environment holding standard library definitions
     stdlib_environment: Rc<RefCell<Environment>>,
+    // Cached references to common builtins to avoid hashmap lookups on every access
+    builtins: BuiltinsCache,
+    // Call frames for fast local access
+    frames: Vec<Frame>,
+    // Current block depth (reset per function call)
+    block_depth: usize,
 }
 
 impl Interpreter {
@@ -46,10 +98,16 @@ impl Interpreter {
         // 4. Create the main global environment for user code
         let global_env = Rc::new(RefCell::new(Environment::new()));
 
-        // 5. Return the final interpreter instance
+        // 5. Build builtins cache
+        let builtins = BuiltinsCache::new(&stdlib_env.borrow());
+
+        // 6. Return the final interpreter instance
         Interpreter {
             environment: global_env,
             stdlib_environment: stdlib_env,
+            builtins,
+            frames: Vec::new(),
+            block_depth: 0,
         }
     }
 
@@ -86,6 +144,9 @@ impl Interpreter {
         let mut temp_interpreter = Interpreter {
             environment: Rc::clone(&target_env),
             stdlib_environment: Rc::clone(&target_env),
+            builtins: BuiltinsCache::new(&target_env.borrow()),
+            frames: Vec::new(),
+            block_depth: 0,
         };
 
         for statement in program.statements {
@@ -195,7 +256,43 @@ impl Interpreter {
     fn eval_statement(&mut self, statement: &Statement) -> Result<(), RuntimeError> {
         match statement {
             Statement::ExpressionStatement(expr) => {
-                // Evaluate expression statements for their side effects
+                // Fast-path for assignment expressions where the result is unused
+                if let Expression::Assignment { target, value } = expr {
+                    if let Expression::Identifier(t_ident) = target.as_ref() {
+                        let var_name = &t_ident.name;
+                        if let Expression::BinaryOperation { left, op, right } = value.as_ref() {
+                            if matches!(op, BinaryOperator::Add) {
+                                // x = x + y
+                                if let Expression::Identifier(l_ident) = left.as_ref() {
+                                    if &l_ident.name == var_name {
+                                        let rhs_val = self.eval_expression(right)?;
+                                        if self.environment.borrow_mut().add_in_place(var_name, rhs_val).is_ok() {
+                                            return Ok(());
+                                        }
+                                        if let Expression::ListInitializer { items } = right.as_ref() {
+                                            if items.len() == 1 {
+                                                let item_val = self.eval_expression(&items[0])?;
+                                                if self.environment.borrow_mut().append_to_list(var_name, item_val).is_ok() {
+                                                    return Ok(());
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                // x = y + x
+                                if let Expression::Identifier(r_ident) = right.as_ref() {
+                                    if &r_ident.name == var_name {
+                                        let lhs_val = self.eval_expression(left)?;
+                                        if self.environment.borrow_mut().add_in_place(var_name, lhs_val).is_ok() {
+                                            return Ok(());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // Fallback: evaluate normally
                 self.eval_expression(expr)?;
                 Ok(())
             },
@@ -204,7 +301,15 @@ impl Interpreter {
                     Some(init_expr) => self.eval_expression(init_expr)?,
                     None => Value::Null, // Default to null if no initializer
                 };
-                 self.environment.borrow_mut().define(name.name.clone(), value);
+                // If at top-level of a function (immediately within function body), track in frame locals
+                if let Some(frame) = self.frames.last_mut() {
+                    if self.block_depth == 1 {
+                        let slot = frame.locals.len();
+                        frame.locals.push(value.clone());
+                        frame.local_slots.insert(name.name.clone(), slot);
+                    }
+                }
+                self.environment.borrow_mut().define(name.name.clone(), value);
                 Ok(())
             },
             Statement::ReturnStatement { value } => {
@@ -227,6 +332,7 @@ impl Interpreter {
                     body: Some(body.clone()),
                     env: Rc::clone(&self.environment), // Capture current environment
                     is_builtin: false,
+                    builtin_id: None,
                 };
                 self.environment.borrow_mut().define(name.name.clone(), Value::Function(Box::new(func)));
                 Ok(())
@@ -364,7 +470,23 @@ impl Interpreter {
    }
 
     fn eval_block_statement(&mut self, block: &BlockStatement) -> Result<(), RuntimeError> {
-        // Create a new environment for the block scope
+        // Enter a new block depth
+        self.block_depth = self.block_depth.saturating_add(1);
+
+        // Fast path: If the block does not introduce new bindings, execute in-place without creating a new scope
+        if !Self::block_introduces_bindings(block) {
+            for statement in &block.statements {
+                match self.eval_statement(statement) {
+                    Ok(_) => continue,
+                    Err(err @ RuntimeError::Return(_)) => { self.block_depth -= 1; return Err(err); },
+                    Err(other_err) => { self.block_depth -= 1; return Err(other_err); },
+                }
+            }
+            self.block_depth -= 1;
+            return Ok(());
+        }
+
+        // Slow path: Create a new environment for the block scope
         let block_env = Rc::new(RefCell::new(Environment::new_with_outer(Rc::clone(&self.environment))));
         let previous_env = std::mem::replace(&mut self.environment, block_env);
 
@@ -383,8 +505,9 @@ impl Interpreter {
             }
         }
 
-        // Restore the previous environment
+        // Restore the previous environment and leave block depth
         self.environment = previous_env;
+        self.block_depth -= 1;
         result
     }
 
@@ -476,13 +599,56 @@ impl Interpreter {
                 self.eval_unary_operation(op, operand_val)
             },
             Expression::Assignment { target, value } => {
+                // Optimize patterns like: x = x + y; x = y + x; xs = xs + [item]
+                if let Expression::Identifier(t_ident) = target.as_ref() {
+                    let var_name = &t_ident.name;
+                    if let Expression::BinaryOperation { left, op, right } = value.as_ref() {
+                        if matches!(op, BinaryOperator::Add) {
+                            // x = x + y
+                            if let Expression::Identifier(l_ident) = left.as_ref() {
+                                if &l_ident.name == var_name {
+                                    let rhs_val = self.eval_expression(right)?;
+                                    // Try numeric fast path
+                                    if self.environment.borrow_mut().add_in_place(var_name, rhs_val.clone()).is_ok() {
+                                        if let Some(updated) = self.environment.borrow().get(var_name) { return Ok(updated); }
+                                    }
+                                    // Try list append fast path: xs = xs + [item]
+                                    let is_list_target = {
+                                        let env_ref = self.environment.borrow();
+                                        matches!(env_ref.get(var_name), Some(Value::List(_)))
+                                    };
+                                    if is_list_target {
+                                        if let Expression::ListInitializer { items } = right.as_ref() {
+                                            if items.len() == 1 {
+                                                let item_val = self.eval_expression(&items[0])?;
+                                                self.environment.borrow_mut().append_to_list(var_name, item_val)?;
+                                                if let Some(updated) = self.environment.borrow().get(var_name) { return Ok(updated); }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            // x = y + x
+                            if let Expression::Identifier(r_ident) = right.as_ref() {
+                                if &r_ident.name == var_name {
+                                    let lhs_val = self.eval_expression(left)?;
+                                    if self.environment.borrow_mut().add_in_place(var_name, lhs_val.clone()).is_ok() {
+                                        if let Some(updated) = self.environment.borrow().get(var_name) { return Ok(updated); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Fallback: regular evaluation and assignment
                 let assigned_value = self.eval_expression(value)?;
                 match target.as_ref() {
                     Expression::Identifier(ident) => {
                         self.environment.borrow_mut().assign(&ident.name, assigned_value.clone())?;
                         Ok(assigned_value)
                     }
-                     // TODO: Handle MemberAccess and IndexAccess assignments
+                    // TODO: Handle MemberAccess and IndexAccess assignments
                     _ => Err(RuntimeError::InvalidOperation(format!("Invalid assignment target: {:?}", target)))
                 }
             },
@@ -512,10 +678,19 @@ impl Interpreter {
         if let Some(value) = self.environment.borrow().get(&identifier.name) {
             return Ok(value);
         }
-        // If not found locally, check the stdlib environment (implicitly imported)
-        // This provides access to things like `print` without explicit import for now.
-        // TODO: Reconsider this implicit fallback - should `print` require `from std import print`?
-        // For now, it allows built-ins defined in Rust (like print) to work without import.
+        // Next, check the top call frame for parameter slots
+        if let Some(frame) = self.frames.last() {
+            if let Some(slot) = frame.param_slots.get(&identifier.name) {
+                if let Some(val) = frame.locals.get(*slot) { return Ok(val.clone()); }
+            }
+            if let Some(slot) = frame.local_slots.get(&identifier.name) {
+                if let Some(val) = frame.locals.get(*slot) { return Ok(val.clone()); }
+            }
+        }
+        // Finally, check cached builtins and stdlib env
+        if let Some(b) = self.builtins.get(&identifier.name) {
+            return Ok(b);
+        }
         self.stdlib_environment.borrow().get(&identifier.name)
             .ok_or_else(|| RuntimeError::UndefinedVariable(identifier.name.clone()))
     }
@@ -530,8 +705,9 @@ impl Interpreter {
                 (Value::Float(l), Value::Int(r)) => Ok(Value::Float(l + r as f64)),
                 (Value::String(l), Value::String(r)) => Ok(Value::String(std::borrow::Cow::Owned(l.into_owned() + &r))),
                 (Value::List(l), Value::List(r)) => {
-                    let mut result = l.clone();
-                    result.extend(r.clone());
+                    let mut result = Vec::with_capacity(l.len() + r.len());
+                    result.extend_from_slice(&l);
+                    result.extend_from_slice(&r);
                     Ok(Value::List(result))
                 },
                 (l, r) => Err(RuntimeError::TypeError(format!("Cannot add {} and {}", l, r))),
@@ -562,12 +738,12 @@ impl Interpreter {
                (l, r) => Err(RuntimeError::TypeError(format!("Cannot calculate modulo for {} % {}", l, r))),
            },
            // Comparison
-           BinaryOperator::Equal => Ok(Value::Boolean(self.values_equal(left, right)?)),
-           BinaryOperator::NotEqual => Ok(Value::Boolean(!self.values_equal(left, right)?)),
-           BinaryOperator::LessThan => self.compare_values(left, right).map(|ord| Value::Boolean(ord == Some(std::cmp::Ordering::Less))),
-           BinaryOperator::GreaterThan => self.compare_values(left, right).map(|ord| Value::Boolean(ord == Some(std::cmp::Ordering::Greater))),
-           BinaryOperator::LessEqual => self.compare_values(left, right).map(|ord| Value::Boolean(ord != Some(std::cmp::Ordering::Greater))),
-           BinaryOperator::GreaterEqual => self.compare_values(left, right).map(|ord| Value::Boolean(ord != Some(std::cmp::Ordering::Less))),
+           BinaryOperator::Equal => Ok(Value::Boolean(self.values_equal(&left, &right)?)),
+           BinaryOperator::NotEqual => Ok(Value::Boolean(!self.values_equal(&left, &right)?)),
+           BinaryOperator::LessThan => self.compare_values(&left, &right).map(|ord| Value::Boolean(ord == Some(std::cmp::Ordering::Less))),
+           BinaryOperator::GreaterThan => self.compare_values(&left, &right).map(|ord| Value::Boolean(ord == Some(std::cmp::Ordering::Greater))),
+           BinaryOperator::LessEqual => self.compare_values(&left, &right).map(|ord| Value::Boolean(ord != Some(std::cmp::Ordering::Greater))),
+           BinaryOperator::GreaterEqual => self.compare_values(&left, &right).map(|ord| Value::Boolean(ord != Some(std::cmp::Ordering::Less))),
            // Logical (short-circuiting is handled earlier)
            BinaryOperator::And => Ok(Value::Boolean(self.is_truthy(left) && self.is_truthy(right))),
            BinaryOperator::Or => Ok(Value::Boolean(self.is_truthy(left) || self.is_truthy(right))),
@@ -622,7 +798,7 @@ impl Interpreter {
                             // Perform equality check using values_equal helper
                             let mut found = false;
                             for item in l.iter() {
-                                if self.values_equal(item.clone(), value_to_find.clone())? {
+                                if self.values_equal(item, value_to_find)? {
                                     found = true;
                                     break;
                                 }
@@ -635,9 +811,26 @@ impl Interpreter {
                         )))
                     }
                 } else if func.is_builtin {
-                    // Regular Rust built-in function (like print, len, type, abs, max, min)
-                    // Note: We use the function name stored in the Function struct now.
-                    self.call_rust_builtin_function(&func.name, arg_values)
+                    // Fast ID-based dispatch for builtins
+                    match func.builtin_id {
+                        Some(BuiltinId::Print) => runtime::stdlib::builtin_print(arg_values),
+                        Some(BuiltinId::Println) => runtime::stdlib::builtin_println(arg_values),
+                        Some(BuiltinId::Len) => runtime::stdlib::builtin_len(arg_values),
+                        Some(BuiltinId::Type) => runtime::stdlib::builtin_type(arg_values),
+                        Some(BuiltinId::ToString) => runtime::stdlib::builtin_to_string(arg_values),
+                        Some(BuiltinId::TcpConnect) => runtime::stdlib::builtin_tcp_connect(arg_values),
+                        Some(BuiltinId::TcpConnectWithTimeout) => runtime::stdlib::builtin_tcp_connect_with_timeout(arg_values),
+                        Some(BuiltinId::SocketWrite) => runtime::stdlib::builtin_socket_write(arg_values),
+                        Some(BuiltinId::SocketRead) => runtime::stdlib::builtin_socket_read(arg_values),
+                        Some(BuiltinId::HttpGet) => runtime::stdlib::builtin_http_get(arg_values),
+                        Some(BuiltinId::TcpBind) => runtime::stdlib::builtin_tcp_listener_bind(arg_values),
+                        Some(BuiltinId::TcpAccept) => runtime::stdlib::builtin_tcp_listener_accept(arg_values),
+                        Some(BuiltinId::UdpBind) => runtime::stdlib::builtin_udp_bind(arg_values),
+                        Some(BuiltinId::UdpSendTo) => runtime::stdlib::builtin_udp_send_to(arg_values),
+                        Some(BuiltinId::UdpRecvFrom) => runtime::stdlib::builtin_udp_recv_from(arg_values),
+                        Some(BuiltinId::StringTrimEnd) => runtime::stdlib::builtin_string_trim_end(arg_values),
+                        None => self.call_rust_builtin_function(&func.name, arg_values),
+                    }
                 } else {
                     // User-defined Oxygen function
                     self.call_user_function(*func, arg_values)
@@ -686,15 +879,24 @@ impl Interpreter {
             )));
         }
 
-        let func_env = Rc::new(RefCell::new(Environment::new_with_outer(Rc::clone(&func.env))));
+        let func_env = Rc::new(RefCell::new(Environment::new_with_outer_capacity(Rc::clone(&func.env), func.parameters.len() + 2)));
         for (i, (param, _)) in func.parameters.iter().enumerate() {
             func_env.borrow_mut().define(param.name.clone(), args[i].clone());
         }
 
         if let Some(body) = func.body {
-             // Temporarily switch environment
+            // Prepare call frame with parameter slots
+            let mut frame = Frame::with_capacity(func.parameters.len());
+            frame.locals = args;
+            for (i, (param, _)) in func.parameters.iter().enumerate() {
+                frame.param_slots.insert(param.name.clone(), i);
+            }
+
+            // Temporarily switch environment and push frame
             let previous_env = std::mem::replace(&mut self.environment, func_env);
+            self.frames.push(frame);
             let result = self.execute_function_body(&body);
+            self.frames.pop();
             self.environment = previous_env; // Restore environment
             result
         } else {
@@ -798,6 +1000,7 @@ impl Interpreter {
                         body: None,
                         env: Rc::new(RefCell::new(Environment::new())), // Env to capture self
                         is_builtin: true, // Mark as special built-in method
+                        builtin_id: None,
                     };
                     // Capture the string value
                     func.env.borrow_mut().define("__self".to_string(), Value::String(s));
@@ -822,6 +1025,7 @@ impl Interpreter {
                         body: None,
                         env: Rc::new(RefCell::new(Environment::new())), // Env to capture self
                         is_builtin: true, // Mark as special built-in method
+                        builtin_id: None,
                     };
                     // Capture the list value
                     func.env.borrow_mut().define("__self".to_string(), Value::List(list));
@@ -982,13 +1186,13 @@ impl Interpreter {
         }
     }
 
-    fn compare_values(&self, left: Value, right: Value) -> Result<Option<std::cmp::Ordering>, RuntimeError> {
+    fn compare_values(&self, left: &Value, right: &Value) -> Result<Option<std::cmp::Ordering>, RuntimeError> {
         match (left, right) {
-            (Value::Int(l), Value::Int(r)) => Ok(l.partial_cmp(&r)),
-            (Value::Float(l), Value::Float(r)) => Ok(l.partial_cmp(&r)),
-            (Value::Int(l), Value::Float(r)) => Ok((l as f64).partial_cmp(&r)),
-            (Value::Float(l), Value::Int(r)) => Ok(l.partial_cmp(&(r as f64))),
-            (Value::String(l), Value::String(r)) => Ok(l.partial_cmp(&r)),
+            (Value::Int(l), Value::Int(r)) => Ok(l.partial_cmp(r)),
+            (Value::Float(l), Value::Float(r)) => Ok(l.partial_cmp(r)),
+            (Value::Int(l), Value::Float(r)) => Ok((*l as f64).partial_cmp(r)),
+            (Value::Float(l), Value::Int(r)) => Ok(l.partial_cmp(&(*r as f64))),
+            (Value::String(l), Value::String(r)) => Ok(l.partial_cmp(r)),
             // Lists can be compared if their elements are comparable
             (Value::List(l), Value::List(r)) => {
                 // Basic length comparison first for efficiency
@@ -998,7 +1202,7 @@ impl Interpreter {
                 
                 // Compare each element
                 for (left_item, right_item) in l.iter().zip(r.iter()) {
-                    match self.compare_values(left_item.clone(), right_item.clone())? {
+                    match self.compare_values(left_item, right_item)? {
                         Some(std::cmp::Ordering::Equal) => continue, // Elements are equal, continue
                         Some(order) => return Ok(Some(order)), // Found a non-equal pair
                         None => return Ok(None), // Incomparable elements found
@@ -1022,14 +1226,14 @@ impl Interpreter {
         }
     }
 
-    fn values_equal(&self, left: Value, right: Value) -> Result<bool, RuntimeError> {
+    fn values_equal(&self, left: &Value, right: &Value) -> Result<bool, RuntimeError> {
         match (left, right) {
             (Value::Null, Value::Null) => Ok(true),
             (Value::Boolean(l), Value::Boolean(r)) => Ok(l == r),
             (Value::Int(l), Value::Int(r)) => Ok(l == r),
             (Value::Float(l), Value::Float(r)) => Ok(l == r), // Precision issues?
-            (Value::Int(l), Value::Float(r)) => Ok((l as f64) == r),
-            (Value::Float(l), Value::Int(r)) => Ok(l == (r as f64)),
+            (Value::Int(l), Value::Float(r)) => Ok((*l as f64) == *r),
+            (Value::Float(l), Value::Int(r)) => Ok(*l == (*r as f64)),
             (Value::String(l), Value::String(r)) => Ok(l == r),
             (Value::Function(l), Value::Function(r)) => Ok(*l == *r),
             (Value::List(l), Value::List(r)) => {
@@ -1040,7 +1244,7 @@ impl Interpreter {
                 
                 // Check each element for equality
                 for (left_item, right_item) in l.iter().zip(r.iter()) {
-                    if !self.values_equal(left_item.clone(), right_item.clone())? {
+                    if !self.values_equal(left_item, right_item)? {
                         return Ok(false);
                     }
                 }
@@ -1070,9 +1274,29 @@ impl Interpreter {
     }
 }
 
+impl Interpreter {
+    // Returns true if the block contains statements that introduce new bindings in this scope
+    fn block_introduces_bindings(block: &BlockStatement) -> bool {
+        use crate::lexer::astgen::Statement::*;
+        for stmt in &block.statements {
+            match stmt {
+                LetDeclaration { .. } => return true,
+                FunctionDeclaration { .. } => return true,
+                StructDeclaration(_) => return true,
+                ImplBlock { .. } => return true,
+                ImportStatement(_) => return true,
+                ExportStatement(_) => return true,
+                // Control flow and expression statements do not introduce new bindings at this level
+                ExpressionStatement(_) | ReturnStatement { .. } | BreakStatement | IfStatement { .. } | WhileStatement { .. } | ForStatement { .. } => {}
+            }
+        }
+        false
+    }
+}
+
 // Add type_name helper method to Value if not already present
 impl Value {
-    fn type_name(&self) -> &'static str {
+    pub(crate) fn type_name(&self) -> &'static str {
         match self {
             Value::Int(_) => "int",
             Value::Float(_) => "float",

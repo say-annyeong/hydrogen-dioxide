@@ -8,3 +8,4 @@ pub use error::RuntimeError;
 pub use value::{Value, Function};
 pub use environment::Environment;
 pub use evaluator::Interpreter; 
+pub use evaluator::BuiltinsCache;

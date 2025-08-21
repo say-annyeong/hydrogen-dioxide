@@ -1,5 +1,5 @@
 use crate::interpret::{Value, RuntimeError, environment::Environment};
-use crate::interpret::value::{Function, StructInstanceValue};
+use crate::interpret::value::{Function, StructInstanceValue, BuiltinId};
 use crate::lexer::astgen::Identifier;
 use std::io::{self, Write, Read};
 use std::net::{TcpStream, TcpListener};
@@ -407,42 +407,36 @@ pub fn register_stdlib(env: &mut crate::interpret::environment::Environment) {
     use std::cell::RefCell;
 
     // Combine Rust built-ins and placeholders for Oxygen functions
-    let functions: &[(&str, fn(Vec<Value>) -> Result<Value, RuntimeError>)] = &[
-        ("print", builtin_print),
-        ("println", builtin_println),
-        ("len", builtin_len),
-        ("type", builtin_type),
-        ("to_string", builtin_to_string),
-        // Networking built-ins (internal names, likely)
-        ("__tcp_connect", builtin_tcp_connect),
-        ("__tcp_connect_with_timeout", builtin_tcp_connect_with_timeout),
-        ("__socket_write", builtin_socket_write),
-        ("__socket_read", builtin_socket_read),
-        //("__socket_close", builtin_socket_close), // Drop handles it
-        ("__http_get", builtin_http_get),
-        // TCP Listener built-ins
-        ("__tcp_bind", builtin_tcp_listener_bind),
-        ("__tcp_accept", builtin_tcp_listener_accept),
-        // UDP Socket built-ins
-        ("__udp_bind", builtin_udp_bind),
-        ("__udp_send_to", builtin_udp_send_to),
-        ("__udp_recv_from", builtin_udp_recv_from),
-        // String built-ins
-        ("__string_trim_end", builtin_string_trim_end),
-        // Provide __to_string alias if needed by stdlib internal calls, although direct registration is preferred
-        ("__to_string", builtin_to_string),
+    let builtins: &[(&str, BuiltinId)] = &[
+        ("print", BuiltinId::Print),
+        ("println", BuiltinId::Println),
+        ("len", BuiltinId::Len),
+        ("type", BuiltinId::Type),
+        ("to_string", BuiltinId::ToString),
+        ("__tcp_connect", BuiltinId::TcpConnect),
+        ("__tcp_connect_with_timeout", BuiltinId::TcpConnectWithTimeout),
+        ("__socket_write", BuiltinId::SocketWrite),
+        ("__socket_read", BuiltinId::SocketRead),
+        ("__http_get", BuiltinId::HttpGet),
+        ("__tcp_bind", BuiltinId::TcpBind),
+        ("__tcp_accept", BuiltinId::TcpAccept),
+        ("__udp_bind", BuiltinId::UdpBind),
+        ("__udp_send_to", BuiltinId::UdpSendTo),
+        ("__udp_recv_from", BuiltinId::UdpRecvFrom),
+        ("__string_trim_end", BuiltinId::StringTrimEnd),
+        ("__to_string", BuiltinId::ToString),
     ];
 
-    for (name, _func_ptr) in functions.iter() {
-        // Define placeholder function values. The actual Rust function is looked up by name during call.
+    for (name, id) in builtins.iter() {
         env.define(
-            name.to_string(),
+            (*name).to_string(),
             Value::Function(Box::new(Function {
-                name: name.to_string(),
-                parameters: vec![], // Dynamic for built-ins
+                name: (*name).to_string(),
+                parameters: vec![],
                 body: None,
                 env: Rc::new(RefCell::new(crate::interpret::environment::Environment::new())),
                 is_builtin: true,
+                builtin_id: Some(*id),
             }))
         );
     }
