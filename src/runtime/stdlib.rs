@@ -86,7 +86,7 @@ pub fn builtin_type(args: Vec<Value>) -> Result<Value, RuntimeError> {
 
     Ok(Value::String(std::borrow::Cow::Owned(type_str.to_string())))
 }
-
+/*
 // --- Networking Built-ins ---
 
 // Connects to a TCP server
@@ -367,6 +367,7 @@ pub fn builtin_tcp_listener_accept(args: Vec<Value>) -> Result<Value, RuntimeErr
         Err(RuntimeError::TypeError("tcp_accept expects a TcpListener resource".to_string()))
     }
 }
+*/
 
 // String trim_end implementation
 pub fn builtin_string_trim_end(args: Vec<Value>) -> Result<Value, RuntimeError> {
@@ -413,6 +414,7 @@ pub fn register_stdlib(env: &mut crate::interpret::environment::Environment) {
         ("len", BuiltinId::Len),
         ("type", BuiltinId::Type),
         ("to_string", BuiltinId::ToString),
+        /*
         ("__tcp_connect", BuiltinId::TcpConnect),
         ("__tcp_connect_with_timeout", BuiltinId::TcpConnectWithTimeout),
         ("__socket_write", BuiltinId::SocketWrite),
@@ -423,6 +425,7 @@ pub fn register_stdlib(env: &mut crate::interpret::environment::Environment) {
         ("__udp_bind", BuiltinId::UdpBind),
         ("__udp_send_to", BuiltinId::UdpSendTo),
         ("__udp_recv_from", BuiltinId::UdpRecvFrom),
+        */
         ("__string_trim_end", BuiltinId::StringTrimEnd),
         ("__to_string", BuiltinId::ToString),
     ];
@@ -442,6 +445,7 @@ pub fn register_stdlib(env: &mut crate::interpret::environment::Environment) {
     }
 }
 
+/*
 // --- UDP Built-ins ---
 
 // Binds a UDP socket to an address and port
@@ -535,5 +539,6 @@ pub fn builtin_udp_recv_from(args: Vec<Value>) -> Result<Value, RuntimeError> {
         Err(RuntimeError::TypeError("udp_recv_from expects a UdpSocket resource".to_string()))
     }
 }
+*/
 
 // TODO: Add other built-in functions here (e.g., len, type, input, file I/O, etc.) 

@@ -27,9 +27,9 @@ impl BuiltinsCache {
         // List of builtin names registered in runtime::stdlib::register_stdlib
         const NAMES: &[&str] = &[
             "print", "println", "len", "type", "to_string", "__to_string",
-            "__tcp_connect", "__tcp_connect_with_timeout", "__socket_write", "__socket_read",
+            /* "__tcp_connect", "__tcp_connect_with_timeout", "__socket_write", "__socket_read",
             "__http_get", "__tcp_bind", "__tcp_accept", "__udp_bind", "__udp_send_to", "__udp_recv_from",
-            "__string_trim_end",
+            "__string_trim_end", */
         ];
         let mut map = HashMap::with_capacity(NAMES.len());
         for &name in NAMES.iter() {
@@ -786,7 +786,7 @@ impl Interpreter {
                             // Prepend self to the args for the builtin call
                             let mut final_args = vec![self_val];
                             final_args.extend(arg_values); 
-                            runtime::stdlib::builtin_string_trim_end(final_args)                            
+                            runtime::stdlib::builtin_string_trim_end(final_args)
                         },
                         (Value::List(l), "contains") => {
                             if arg_values.len() != 1 {
@@ -818,6 +818,7 @@ impl Interpreter {
                         Some(BuiltinId::Len) => runtime::stdlib::builtin_len(arg_values),
                         Some(BuiltinId::Type) => runtime::stdlib::builtin_type(arg_values),
                         Some(BuiltinId::ToString) => runtime::stdlib::builtin_to_string(arg_values),
+                        /*
                         Some(BuiltinId::TcpConnect) => runtime::stdlib::builtin_tcp_connect(arg_values),
                         Some(BuiltinId::TcpConnectWithTimeout) => runtime::stdlib::builtin_tcp_connect_with_timeout(arg_values),
                         Some(BuiltinId::SocketWrite) => runtime::stdlib::builtin_socket_write(arg_values),
@@ -828,6 +829,7 @@ impl Interpreter {
                         Some(BuiltinId::UdpBind) => runtime::stdlib::builtin_udp_bind(arg_values),
                         Some(BuiltinId::UdpSendTo) => runtime::stdlib::builtin_udp_send_to(arg_values),
                         Some(BuiltinId::UdpRecvFrom) => runtime::stdlib::builtin_udp_recv_from(arg_values),
+                        */
                         Some(BuiltinId::StringTrimEnd) => runtime::stdlib::builtin_string_trim_end(arg_values),
                         None => self.call_rust_builtin_function(&func.name, arg_values),
                     }
@@ -852,6 +854,7 @@ impl Interpreter {
             "len" => runtime::stdlib::builtin_len(args),
             "type" => runtime::stdlib::builtin_type(args),
             "to_string" | "__to_string" => runtime::stdlib::builtin_to_string(args),
+             /*
             "__tcp_connect" => runtime::stdlib::builtin_tcp_connect(args),
             "__tcp_connect_with_timeout" => runtime::stdlib::builtin_tcp_connect_with_timeout(args),
             "__socket_write" => runtime::stdlib::builtin_socket_write(args),
@@ -864,6 +867,7 @@ impl Interpreter {
             "__udp_bind" => runtime::stdlib::builtin_udp_bind(args),
             "__udp_send_to" => runtime::stdlib::builtin_udp_send_to(args),
             "__udp_recv_from" => runtime::stdlib::builtin_udp_recv_from(args),
+            */
             // String built-ins
             "__string_trim_end" => runtime::stdlib::builtin_string_trim_end(args),
             // Note: abs, max, min are loaded from Oxygen stdlib now, not handled here.

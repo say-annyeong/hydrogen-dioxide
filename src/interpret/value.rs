@@ -10,6 +10,7 @@ pub enum BuiltinId {
     Len,
     Type,
     ToString,
+    /*
     TcpConnect,
     TcpConnectWithTimeout,
     SocketWrite,
@@ -20,6 +21,7 @@ pub enum BuiltinId {
     UdpBind,
     UdpSendTo,
     UdpRecvFrom,
+    */
     StringTrimEnd,
 }
 
