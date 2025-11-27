@@ -15,7 +15,7 @@ pub fn main() {
 
     let file_path = "code.txt";
     source_origin = file_path.to_string();
-    match fs::read_to_string(file_path) {
+    match fs::read_to_string("code.txt") {
         Ok(contents) => {
             source_code = contents;
         }
