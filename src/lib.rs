@@ -8,7 +8,7 @@ use std::env;
 use std::fs;
 use std::process;
 
-fn main() {
+pub fn main() {
     let args: Vec<String> = env::args().collect();
     let mut source_code = String::new();
     let mut source_origin = "<embedded>".to_string();
