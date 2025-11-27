@@ -1,0 +1,7 @@
+start();
+
+fn start() {
+    println("Hello, World!");
+}
+
+start();

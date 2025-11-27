@@ -9,34 +9,25 @@ use std::fs;
 use std::process;
 
 pub fn main() {
-    let args: Vec<String> = env::args().collect();
+
     let mut source_code = String::new();
     let mut source_origin = "<embedded>".to_string();
 
-    if args.len() > 2 {
-        eprintln!("Usage: {} [script_file]", args[0]);
-        process::exit(1);
-    } else if args.len() == 2 {
-        // Read from file
-        let file_path = &args[1];
-        source_origin = file_path.clone();
-        match fs::read_to_string(file_path) {
-            Ok(contents) => {
-                source_code = contents;
-            }
-            Err(e) => {
-                eprintln!("Error reading file '{}': {}", file_path, e);
-                process::exit(1);
-            }
+    let file_path = "code.txt";
+    source_origin = file_path.to_string();
+    match fs::read_to_string(file_path) {
+        Ok(contents) => {
+            source_code = contents;
         }
-    } else {
-        // Use embedded code as fallback
-        eprintln!("No file provided, input Oxygen file [.oxy] to run");
+        Err(e) => {
+            eprintln!("Error reading file '{}': {}", file_path, e);
+            process::exit(1);
+        }
     }
 
     println!("--- Running Source: {} ---", source_origin);
     // Optionally print source code if desired
-    // println!("{}", source_code);
+    println!("{}", source_code);
 
     let debug_enabled = std::env::var_os("OXY_DEBUG").is_some();
     if debug_enabled {
